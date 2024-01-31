@@ -17,6 +17,8 @@ def load_image(filename):
     ext = splitext(filename)[1]
     if ext == '.npy':
         return Image.fromarray(np.load(filename))
+    elif ext == '.npz':
+        return Image.fromarray(np.load(filename)['depth'])
     elif ext in ['.pt', '.pth']:
         return Image.fromarray(torch.load(filename).numpy())
     else:
@@ -36,12 +38,18 @@ def unique_mask_values(idx, mask_dir, mask_suffix):
 
 
 class BasicDataset(Dataset):
-    def __init__(self, images_dir: str, mask_dir: str, scale: float = 1.0, mask_suffix: str = ''):
+    def __init__(self, images_dir: str, mask_dir: str, depth_dir: str, scale: float = 1.0, mask_suffix: str = ''):
         self.images_dir = Path(images_dir)
         self.mask_dir = Path(mask_dir)
         assert 0 < scale <= 1, 'Scale must be between 0 and 1'
         self.scale = scale
         self.mask_suffix = mask_suffix
+
+        if depth_dir is not None:
+            print("Using depth iamge in dataset")
+            self.depth_dir = Path(depth_dir)
+        else:
+            self.depth_dir = None
 
         self.ids = [splitext(file)[0] for file in listdir(images_dir) if isfile(join(images_dir, file)) and not file.startswith('.')]
         if not self.ids:
@@ -62,7 +70,7 @@ class BasicDataset(Dataset):
         return len(self.ids)
 
     @staticmethod
-    def preprocess(mask_values, pil_img, scale, is_mask):
+    def preprocess(mask_values, pil_img, scale, is_mask, is_depth):
         w, h = pil_img.size
         newW, newH = int(scale * w), int(scale * h)
         assert newW > 0 and newH > 0, 'Scale is too small, resized images would have no pixel'
@@ -79,7 +87,7 @@ class BasicDataset(Dataset):
 
             return mask
 
-        else:
+        if not is_depth:
             if img.ndim == 2:
                 img = img[np.newaxis, ...]
             else:
@@ -89,11 +97,30 @@ class BasicDataset(Dataset):
                 img = img / 255.0
 
             return img
+        
+        if is_depth:
+            if img.ndim == 2:
+                img = img[np.newaxis, ...]
+            else:
+                img = img.transpose((2, 0, 1))
+
+            # normalize depth 
+            img_min = img.min()
+            img_max = img.max()
+            img = (img - img_min) / (img_max - img_min)
+
+            return img
 
     def __getitem__(self, idx):
         name = self.ids[idx]
         mask_file = list(self.mask_dir.glob(name + self.mask_suffix + '.*'))
         img_file = list(self.images_dir.glob(name + '.*'))
+
+        if self.depth_dir is not None:
+            depth_file = list(self.depth_dir.glob(name + '.*'))
+            assert len(depth_file) == 1, f'Either no depth image or multiple depth images found for the ID {name}: {depth_file}'
+            depth = load_image(depth_file[0])
+            depth = self.preprocess(self.mask_values, depth, self.scale, is_mask=False, is_depth=True)
 
         assert len(img_file) == 1, f'Either no image or multiple images found for the ID {name}: {img_file}'
         assert len(mask_file) == 1, f'Either no mask or multiple masks found for the ID {name}: {mask_file}'
@@ -103,15 +130,22 @@ class BasicDataset(Dataset):
         assert img.size == mask.size, \
             f'Image and mask {name} should be the same size, but are {img.size} and {mask.size}'
 
-        img = self.preprocess(self.mask_values, img, self.scale, is_mask=False)
-        mask = self.preprocess(self.mask_values, mask, self.scale, is_mask=True)
+        img = self.preprocess(self.mask_values, img, self.scale, is_mask=False, is_depth=False)
+        mask = self.preprocess(self.mask_values, mask, self.scale, is_mask=True, is_depth=False)
 
-        return {
-            'image': torch.as_tensor(img.copy()).float().contiguous(),
-            'mask': torch.as_tensor(mask.copy()).long().contiguous()
-        }
+        if self.depth_dir is not None:
+            return {
+                'image': torch.as_tensor(img.copy()).float().contiguous(),
+                'mask': torch.as_tensor(mask.copy()).long().contiguous(),
+                'depth': torch.as_tensor(depth.copy()).float().contiguous()
+            }
+        else:
+            return {
+                'image': torch.as_tensor(img.copy()).float().contiguous(),
+                'mask': torch.as_tensor(mask.copy()).long().contiguous()
+            }
 
 
 class CarvanaDataset(BasicDataset):
-    def __init__(self, images_dir, mask_dir, scale=1):
-        super().__init__(images_dir, mask_dir, scale, mask_suffix='_mask')
+    def __init__(self, images_dir, mask_dir, depth_dir, scale=1):
+        super().__init__(images_dir, mask_dir, depth_dir, scale, mask_suffix='_mask')

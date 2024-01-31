@@ -6,7 +6,7 @@ from utils.dice_score import multiclass_dice_coeff, dice_coeff
 
 
 @torch.inference_mode()
-def evaluate(net, dataloader, device, amp):
+def evaluate(net, dataloader, device, amp, use_depth=False):
     net.eval()
     num_val_batches = len(dataloader)
     dice_score = 0
@@ -16,6 +16,9 @@ def evaluate(net, dataloader, device, amp):
         for batch in tqdm(dataloader, total=num_val_batches, desc='Validation round', unit='batch', leave=False):
             image, mask_true = batch['image'], batch['mask']
 
+            if use_depth:
+                depth = batch['depth']
+                image = torch.cat((image, depth), dim=1)
             # move images and labels to correct device and type
             image = image.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
             mask_true = mask_true.to(device=device, dtype=torch.long)

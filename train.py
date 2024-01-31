@@ -22,7 +22,7 @@ from utils.dice_score import dice_loss
 dir_img = Path('/home/boysun/actmap_data/scene_new_debug/image/')
 dir_mask = Path('/home/boysun/actmap_data/scene_new_debug/mask/')
 dir_depth = Path('/home/boysun/actmap_data/scene_new_debug/depth/')
-dir_checkpoint = Path('/home/boysun/actmap_data/scene_new_debug/checkpoint/')
+dir_checkpoint = Path('/home/boysun/actmap_data/scene_new_debug/checkpoint_depth/')
 
 
 def train_model(
@@ -38,12 +38,19 @@ def train_model(
         weight_decay: float = 1e-8,
         momentum: float = 0.999,
         gradient_clipping: float = 1.0,
+        use_depth: bool = False
 ):
     # 1. Create dataset
-    try:
-        dataset = CarvanaDataset(dir_img, dir_mask, img_scale)
-    except (AssertionError, RuntimeError, IndexError):
-        dataset = BasicDataset(dir_img, dir_mask, img_scale)
+    if use_depth:
+        try:
+            dataset = CarvanaDataset(dir_img, dir_mask,dir_depth, img_scale)
+        except (AssertionError, RuntimeError, IndexError):
+            dataset = BasicDataset(dir_img, dir_mask, dir_depth, img_scale)
+    else:
+        try:
+            dataset = CarvanaDataset(dir_img, dir_mask, None, img_scale)
+        except (AssertionError, RuntimeError, IndexError):
+            dataset = BasicDataset(dir_img, dir_mask, None,img_scale)
 
     # 2. Split into train / validation partitions
     n_val = int(len(dataset) * val_percent)
@@ -88,14 +95,27 @@ def train_model(
         epoch_loss = 0
         with tqdm(total=n_train, desc=f'Epoch {epoch}/{epochs}', unit='img') as pbar:
             for batch in train_loader:
-                images, true_masks = batch['image'], batch['mask']
+                if not use_depth:
+                    images, true_masks = batch['image'], batch['mask']
 
-                assert images.shape[1] == model.n_channels, \
-                    f'Network has been defined with {model.n_channels} input channels, ' \
-                    f'but loaded images have {images.shape[1]} channels. Please check that ' \
-                    'the images are loaded correctly.'
+                    assert images.shape[1] == model.n_channels, \
+                        f'Network has been defined with {model.n_channels} input channels, ' \
+                        f'but loaded images have {images.shape[1]} channels. Please check that ' \
+                        'the images are loaded correctly.'
 
-                images = images.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
+                    images = images.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
+                else: 
+                    images, true_masks, depth = batch['image'], batch['mask'], batch['depth']
+
+                    assert images.shape[1] + depth.shape[1] == model.n_channels, \
+                        f'Network has been defined with {model.n_channels} input channels, ' \
+                        f'but loaded images have {images.shape[1]} channels. Please check that ' \
+                        'the images are loaded correctly.'
+
+                    images = images.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
+                    depth = depth.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
+                    images = torch.cat([images, depth], dim=1)
+
                 true_masks = true_masks.to(device=device, dtype=torch.long)
 
                 with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
@@ -139,7 +159,7 @@ def train_model(
                             if not (torch.isinf(value.grad) | torch.isnan(value.grad)).any():
                                 histograms['Gradients/' + tag] = wandb.Histogram(value.grad.data.cpu())
 
-                        val_score = evaluate(model, val_loader, device, amp)
+                        val_score = evaluate(model, val_loader, device, amp, use_depth=use_depth)
                         scheduler.step(val_score)
 
                         logging.info('Validation Dice score: {}'.format(val_score))
@@ -224,7 +244,8 @@ if __name__ == '__main__':
             device=device,
             img_scale=args.scale,
             val_percent=args.val / 100,
-            amp=args.amp
+            amp=args.amp,
+            use_depth=args.use_depth
         )
     except torch.cuda.OutOfMemoryError:
         logging.error('Detected OutOfMemoryError! '
@@ -240,5 +261,6 @@ if __name__ == '__main__':
             device=device,
             img_scale=args.scale,
             val_percent=args.val / 100,
-            amp=args.amp
+            amp=args.amp,
+            use_depth=args.use_depth
         )
