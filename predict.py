@@ -37,8 +37,9 @@ def get_args():
     parser = argparse.ArgumentParser(description='Predict masks from input images')
     parser.add_argument('--model', '-m', default='MODEL.pth', metavar='FILE',
                         help='Specify the file in which the model is stored')
-    parser.add_argument('--input', '-i', metavar='INPUT', nargs='+', help='Filenames of input images', required=True)
-    parser.add_argument('--output', '-o', metavar='OUTPUT', nargs='+', help='Filenames of output images')
+    parser.add_argument('--input', '-i', metavar='INPUT', help='Filenames of input images', required=True, type=str)
+    parser.add_argument('--output', '-o', metavar='OUTPUT', help='Filenames of output images')
+    parser.add_argument('--save_overlay_output', '-so', metavar='SAVE_OVERLAY', help='Filenames of overlay images')
     parser.add_argument('--viz', '-v', action='store_true',
                         help='Visualize the images as they are processed')
     parser.add_argument('--no-save', '-n', action='store_true', help='Do not save the output masks')
@@ -47,7 +48,7 @@ def get_args():
     parser.add_argument('--scale', '-s', type=float, default=0.5,
                         help='Scale factor for the input images')
     parser.add_argument('--bilinear', action='store_true', default=False, help='Use bilinear upsampling')
-    parser.add_argument('--classes', '-c', type=int, default=2, help='Number of classes')
+    parser.add_argument('--classes', '-c', type=int, default=1, help='Number of classes')
     
     return parser.parse_args()
 
@@ -76,12 +77,30 @@ def mask_to_image(mask: np.ndarray, mask_values):
     return Image.fromarray(out)
 
 
+def overlay_img_with_mask(img, mask, alpha=0.5):
+    # Convert the image to a numpy array
+    overlay_img = np.array(img.copy())
+    
+    # Define the pink color
+    pink = np.array([255, 20, 147], dtype=np.uint8)
+    
+    # Get the positions where the mask is 1
+    positive_pixels = np.where(mask == 1)
+    
+    # Blend the pink color with the original image
+    overlay_img[positive_pixels] = (alpha * pink + (1 - alpha) * overlay_img[positive_pixels]).astype(np.uint8)
+    
+    return Image.fromarray(overlay_img)
+
+
+
 if __name__ == '__main__':
     args = get_args()
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
     in_files = args.input
-    out_files = get_output_filenames(args)
+    out_files = args.output
+    out_overlay_files = args.save_overlay_output
 
     net = UNet(n_channels=3, n_classes=args.classes, bilinear=args.bilinear)
 
@@ -96,7 +115,21 @@ if __name__ == '__main__':
 
     logging.info('Model loaded!')
 
-    for i, filename in enumerate(in_files):
+    # get all images in in_files folder with .jpg extension, into a list
+    print(in_files)
+    files = os.listdir(in_files)
+    in_imgs = []
+    out_imgs = []
+    out_overlay_imgs = []
+
+    for f in files:
+        if f.endswith('.jpg'):
+            in_imgs.append(os.path.join(in_files, f))
+            out_imgs.append(os.path.join(out_files, f))
+            out_overlay_imgs.append(os.path.join(out_overlay_files, f))
+
+    print(in_imgs)
+    for i, filename in enumerate(in_imgs):
         logging.info(f'Predicting image {filename} ...')
         img = Image.open(filename)
 
@@ -105,11 +138,15 @@ if __name__ == '__main__':
                            scale_factor=args.scale,
                            out_threshold=args.mask_threshold,
                            device=device)
+        # overlay the mask on the image
+        overlay_img = overlay_img_with_mask(img, mask)
 
         if not args.no_save:
-            out_filename = out_files[i]
+            out_filename = out_imgs[i]
             result = mask_to_image(mask, mask_values)
             result.save(out_filename)
+            out_overlay_filename = out_overlay_imgs[i]
+            overlay_img.save(out_overlay_filename)
             logging.info(f'Mask saved to {out_filename}')
 
         if args.viz:
