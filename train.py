@@ -86,6 +86,7 @@ def train_model(
     n_val = int(len(dataset) * val_percent)
     n_train = len(dataset) - n_val
     train_set, val_set = random_split(dataset, [n_train, n_val], generator=torch.Generator().manual_seed(0))
+    print(f"Train size: {n_train}, Validation size: {n_val}")
 
     # 3. Create data loaders
     loader_args = dict(batch_size=batch_size, num_workers=os.cpu_count(), pin_memory=True)
@@ -118,7 +119,11 @@ def train_model(
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=5)  # goal: maximize Dice score
     grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
-    criterion = nn.CrossEntropyLoss() if model.n_classes > 1 else nn.BCEWithLogitsLoss()
+
+    pos_weight = torch.tensor([2.0]).to(device)
+    loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
+    criterion = nn.CrossEntropyLoss() if model.n_classes > 1 else loss_fn
     global_step = 0
 
     # 5. Begin training
@@ -157,8 +162,24 @@ def train_model(
                 with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
                     masks_pred = model(images)
                     if model.n_classes == 1:
+                        #since this is a binary classification problem, print out the correct predicted labels ratio,
+                        # calculate the number of correct predicted labels
+                        # and calculate the accuracy
+                        print(f'number of pixels in the mask: {true_masks.numel()}')
+                        print(f'number of pixels in the predicted mask: {masks_pred.numel()}')
+                        print(f"number of positive pixels in the mask: {true_masks.sum()}")
+                        print(f"number of positive pixels in the predicted mask: {masks_pred.sum()}")
+                        print(f"number of negative pixels in the mask: {true_masks.numel() - true_masks.sum()}")
+                        print(f"number of negative pixels in the predicted mask: {masks_pred.numel() - masks_pred.sum()}")
+                        print(f"number of true positive pixels: {(true_masks * masks_pred).sum()}")
+                        print(f"number of false positive pixels: {(true_masks * (1 - masks_pred)).sum()}")
+                        print(f"number of false negative pixels: {((1 - true_masks) * masks_pred).sum()}")
+                        print(f"number of true negative pixels: {((1 - true_masks) * (1 - masks_pred)).sum()}")
+
                         loss = criterion(masks_pred.squeeze(1), true_masks.float())
+                        print(f'Loss: {loss}')
                         loss += dice_loss(F.sigmoid(masks_pred.squeeze(1)), true_masks.float(), multiclass=False)
+                        print(f'Loss after dice loss: {loss}')
                     else:
                         loss = criterion(masks_pred, true_masks)
                         loss += dice_loss(
@@ -185,7 +206,7 @@ def train_model(
 
                 # Evaluation round
                 division_step = (n_train // (5 * batch_size))
-                division_step = 1
+                # division_step = 1
                 if division_step > 0:
                     if global_step % division_step == 0:
                         histograms = {}
@@ -201,13 +222,16 @@ def train_model(
 
                         logging.info('Validation Dice score: {}'.format(val_score))
                         try:
+                            #convert mask_pred to a binary mask for wandb logging
+                            wandb_mask_pred = (F.sigmoid(masks_pred.squeeze(1)) > 0.5).float()
+                    
                             experiment.log({
                                 'learning rate': optimizer.param_groups[0]['lr'],
                                 'validation Dice': val_score,
                                 'images': wandb.Image(images[0].cpu()),
                                 'masks': {
                                     'true': wandb.Image(true_masks[0].float().cpu()),
-                                    'pred': wandb.Image(masks_pred.argmax(dim=1)[0].float().cpu()),
+                                    'pred': wandb.Image(wandb_mask_pred[0].cpu())
                                 },
                                 'step': global_step,
                                 'epoch': epoch,
