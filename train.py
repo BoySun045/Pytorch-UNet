@@ -18,11 +18,41 @@ from evaluate import evaluate
 from unet import UNet
 from utils.data_loading import BasicDataset, CarvanaDataset
 from utils.dice_score import dice_loss
+from torchvision.utils import save_image
 
-dir_img = Path('/home/boysun/actmap_data/scene_new_debug/image/')
-dir_mask = Path('/home/boysun/actmap_data/scene_new_debug/mask/')
-dir_depth = Path('/home/boysun/actmap_data/scene_new_debug/depth/')
-dir_checkpoint = Path('/home/boysun/actmap_data/scene_new_debug/checkpoint_depth/')
+dir_img = Path('/media/boysun/Extreme Pro/one_image_dataset/image/')
+dir_mask = Path('/media/boysun/Extreme Pro/one_image_dataset/mask/')
+dir_depth = Path('/media/boysun/Extreme Pro/one_image_dataset/depth/')
+dir_checkpoint = Path('/media/boysun/Extreme Pro/one_image_dataset/')
+dir_debug = Path('/media/boysun/Extreme Pro/one_image_dataset/debug/')
+
+# make debug directory
+dir_debug.mkdir(parents=True, exist_ok=True)
+
+def save_debug_images(batch, epoch, batch_idx, prefix='train', num_images=5):
+    """
+    Saves a set of images, masks, and optionally depth maps from a batch for debugging.
+
+    Args:
+        batch (dict): The current batch of data containing 'image', 'mask', and optionally 'depth'.
+        epoch (int): Current epoch number for naming.
+        batch_idx (int): Current batch index for naming.
+        prefix (str): Prefix for the filenames to indicate training or validation phase.
+        num_images (int): Number of images to save from the batch.
+    """
+    images, masks = batch['image'][:num_images], batch['mask'][:num_images]
+    depths = batch['depth'][:num_images] if 'depth' in batch else None
+
+    for i in range(num_images):
+        # save images and masks under the dir_debug directory
+        img_path = f'{dir_debug}/{prefix}_epoch{epoch}_batch{batch_idx}_img{i}.jpg'
+        mask_path = f'{dir_debug}/{prefix}_epoch{epoch}_batch{batch_idx}_mask{i}.jpg'
+        save_image(images[i], img_path)
+        save_image(masks[i], mask_path)
+
+        if depths is not None:
+            depth_path = f'{dir_debug}/{prefix}_epoch{epoch}_batch{batch_idx}_depth{i}.png'
+            save_image(depths[i], depth_path)
 
 
 def train_model(
@@ -82,8 +112,10 @@ def train_model(
     ''')
 
     # 4. Set up the optimizer, the loss, the learning rate scheduler and the loss scaling for AMP
-    optimizer = optim.RMSprop(model.parameters(),
-                              lr=learning_rate, weight_decay=weight_decay, momentum=momentum, foreach=True)
+    # optimizer = optim.RMSprop(model.parameters(),
+    #                           lr=learning_rate, weight_decay=weight_decay, momentum=momentum, foreach=True)
+    #use adam optimizer
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=5)  # goal: maximize Dice score
     grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
     criterion = nn.CrossEntropyLoss() if model.n_classes > 1 else nn.BCEWithLogitsLoss()
@@ -94,7 +126,11 @@ def train_model(
         model.train()
         epoch_loss = 0
         with tqdm(total=n_train, desc=f'Epoch {epoch}/{epochs}', unit='img') as pbar:
-            for batch in train_loader:
+            for batch_idx, batch in enumerate(train_loader):
+                # Save debug images for the first batch of each epoch
+                # if batch_idx == 0:
+                #     save_debug_images(batch, epoch, batch_idx, prefix='train')
+
                 if not use_depth:
                     images, true_masks = batch['image'], batch['mask']
 
@@ -149,6 +185,7 @@ def train_model(
 
                 # Evaluation round
                 division_step = (n_train // (5 * batch_size))
+                division_step = 1
                 if division_step > 0:
                     if global_step % division_step == 0:
                         histograms = {}
@@ -191,7 +228,7 @@ def get_args():
     parser = argparse.ArgumentParser(description='Train the UNet on images and target masks')
     parser.add_argument('--epochs', '-e', metavar='E', type=int, default=500, help='Number of epochs')
     parser.add_argument('--batch-size', '-b', dest='batch_size', metavar='B', type=int, default=1, help='Batch size')
-    parser.add_argument('--learning-rate', '-l', metavar='LR', type=float, default=1e-5,
+    parser.add_argument('--learning-rate', '-l', metavar='LR', type=float, default=2e-6,
                         help='Learning rate', dest='lr')
     parser.add_argument('--load', '-f', type=str, default=False, help='Load model from a .pth file')
     parser.add_argument('--scale', '-s', type=float, default=0.5, help='Downscaling factor of the images')
