@@ -1,0 +1,1 @@
+python3 predict.py -m /cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_RGB_miniset/checkpoint_epoch10.pth -i /cluster/project/cvg/boysun/Actmap_MH3D_00801/image/ -o /cluster/project/cvg/boysun/Actmap_MH3D_00801/predict_mask -so /cluster/project/cvg/boysun/Actmap_MH3D_00801/predict_overlay --bilinear -c 1

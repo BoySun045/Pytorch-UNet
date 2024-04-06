@@ -26,7 +26,11 @@ def load_image(filename):
 
 
 def unique_mask_values(idx, mask_dir, mask_suffix):
+    # print("mask_dir: ", mask_dir)
+    # print("mask_suffix: ", mask_suffix)
+    # print("idx: ", idx)
     mask_file = list(mask_dir.glob(idx + mask_suffix + '.*'))[0]
+    # print("mask_file: ", mask_file)
     mask = np.asarray(load_image(mask_file))
     if mask.ndim == 2:
         return np.unique(mask)
@@ -57,11 +61,15 @@ class BasicDataset(Dataset):
 
         logging.info(f'Creating dataset with {len(self.ids)} examples')
         logging.info('Scanning mask files to determine unique values')
-        with Pool() as p:
-            unique = list(tqdm(
-                p.imap(partial(unique_mask_values, mask_dir=self.mask_dir, mask_suffix=self.mask_suffix), self.ids),
-                total=len(self.ids)
-            ))
+
+        # with Pool() as p:
+        #     unique = list(tqdm(
+        #         p.imap(partial(unique_mask_values, mask_dir=self.mask_dir, mask_suffix=self.mask_suffix), self.ids),
+        #         total=len(self.ids)
+        #     ))
+
+        # the above loop is too slow when the number of images is large, since I know for each image the mask values are the same and it is [0, 1], I can just hard code it
+        unique = [np.array([0, 1]) for _ in self.ids]
 
         self.mask_values = list(sorted(np.unique(np.concatenate(unique), axis=0).tolist()))
         logging.info(f'Unique mask values: {self.mask_values}')
@@ -148,4 +156,4 @@ class BasicDataset(Dataset):
 
 class CarvanaDataset(BasicDataset):
     def __init__(self, images_dir, mask_dir, depth_dir, scale=1):
-        super().__init__(images_dir, mask_dir, depth_dir, scale, mask_suffix='_mask')
+        super().__init__(images_dir, mask_dir, depth_dir, scale, mask_suffix='')

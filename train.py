@@ -19,11 +19,18 @@ from unet import UNet
 from utils.data_loading import BasicDataset, CarvanaDataset
 from utils.dice_score import dice_loss
 
-dir_img = Path('/home/boysun/actmap_data/scene_new_debug/image/')
-dir_mask = Path('/home/boysun/actmap_data/scene_new_debug/mask/')
-dir_depth = Path('/home/boysun/actmap_data/scene_new_debug/depth/')
-dir_checkpoint = Path('/home/boysun/actmap_data/scene_new_debug/checkpoint_depth/')
+dir_img = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/image/')
+dir_mask = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/mask/')
+dir_depth = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/depth/')
+# dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_RGBD_miniset/')
+# dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_RGB_miniset/')
+dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_D_miniset/')
 
+# dir_img = Path('/cluster/project/cvg/boysun/MH3D_train_set_middle/image/')
+# dir_mask = Path('/cluster/project/cvg/boysun/MH3D_train_set_middle/mask/')
+# dir_depth = Path('/cluster/project/cvg/boysun/MH3D_train_set_middle/depth/')
+# # dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_RGBD_miniset/')
+# dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_middle/checkpoint_RGB_miniset/')
 
 def train_model(
         model,
@@ -38,7 +45,8 @@ def train_model(
         weight_decay: float = 1e-8,
         momentum: float = 0.999,
         gradient_clipping: float = 1.0,
-        use_depth: bool = False
+        use_depth: bool = False,
+        only_depth: bool = False
 ):
     # 1. Create dataset
     if use_depth:
@@ -56,14 +64,15 @@ def train_model(
     n_val = int(len(dataset) * val_percent)
     n_train = len(dataset) - n_val
     train_set, val_set = random_split(dataset, [n_train, n_val], generator=torch.Generator().manual_seed(0))
+    print(f"Train size: {n_train}, Validation size: {n_val}")
 
     # 3. Create data loaders
-    loader_args = dict(batch_size=batch_size, num_workers=os.cpu_count(), pin_memory=True)
+    loader_args = dict(batch_size=batch_size, num_workers=16, pin_memory=True)
     train_loader = DataLoader(train_set, shuffle=True, **loader_args)
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
     # (Initialize logging)
-    experiment = wandb.init(project='U-Net', resume='allow', anonymous='must')
+    experiment = wandb.init(project='U-Net-large', resume='allow', anonymous='must')
     experiment.config.update(
         dict(epochs=epochs, batch_size=batch_size, learning_rate=learning_rate,
              val_percent=val_percent, save_checkpoint=save_checkpoint, img_scale=img_scale, amp=amp)
@@ -82,11 +91,17 @@ def train_model(
     ''')
 
     # 4. Set up the optimizer, the loss, the learning rate scheduler and the loss scaling for AMP
-    optimizer = optim.RMSprop(model.parameters(),
-                              lr=learning_rate, weight_decay=weight_decay, momentum=momentum, foreach=True)
+    # optimizer = optim.RMSprop(model.parameters(),
+    #                           lr=learning_rate, weight_decay=weight_decay, momentum=momentum, foreach=True)
+    #use adam optimizer
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=5)  # goal: maximize Dice score
     grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
-    criterion = nn.CrossEntropyLoss() if model.n_classes > 1 else nn.BCEWithLogitsLoss()
+
+    pos_weight = torch.tensor([2.0]).to(device)
+    loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
+    criterion = nn.CrossEntropyLoss() if model.n_classes > 1 else loss_fn
     global_step = 0
 
     # 5. Begin training
@@ -94,8 +109,9 @@ def train_model(
         model.train()
         epoch_loss = 0
         with tqdm(total=n_train, desc=f'Epoch {epoch}/{epochs}', unit='img') as pbar:
-            for batch in train_loader:
-                if not use_depth:
+            for batch_idx, batch in enumerate(train_loader):
+
+                if not use_depth and not only_depth:  # RGB images
                     images, true_masks = batch['image'], batch['mask']
 
                     assert images.shape[1] == model.n_channels, \
@@ -104,7 +120,8 @@ def train_model(
                         'the images are loaded correctly.'
 
                     images = images.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
-                else: 
+                
+                elif use_depth and not only_depth:  # RGB-D images
                     images, true_masks, depth = batch['image'], batch['mask'], batch['depth']
 
                     assert images.shape[1] + depth.shape[1] == model.n_channels, \
@@ -115,14 +132,23 @@ def train_model(
                     images = images.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
                     depth = depth.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
                     images = torch.cat([images, depth], dim=1)
-
+                
+                elif only_depth: # Depth images
+                    depth = batch['depth']
+                    true_masks = batch['mask']
+                    images = depth.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
+                
                 true_masks = true_masks.to(device=device, dtype=torch.long)
 
                 with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
                     masks_pred = model(images)
                     if model.n_classes == 1:
+                        #since this is a binary classification problem, print out the correct predicted labels ratio,
+                        # calculate the number of correct predicted labels
+                        # and calculate the accuracy
                         loss = criterion(masks_pred.squeeze(1), true_masks.float())
                         loss += dice_loss(F.sigmoid(masks_pred.squeeze(1)), true_masks.float(), multiclass=False)
+        
                     else:
                         loss = criterion(masks_pred, true_masks)
                         loss += dice_loss(
@@ -148,7 +174,8 @@ def train_model(
                 pbar.set_postfix(**{'loss (batch)': loss.item()})
 
                 # Evaluation round
-                division_step = (n_train // (5 * batch_size))
+                # division_step = (n_train // (5 * batch_size))
+                division_step = 500
                 if division_step > 0:
                     if global_step % division_step == 0:
                         histograms = {}
@@ -159,18 +186,21 @@ def train_model(
                             if not (torch.isinf(value.grad) | torch.isnan(value.grad)).any():
                                 histograms['Gradients/' + tag] = wandb.Histogram(value.grad.data.cpu())
 
-                        val_score = evaluate(model, val_loader, device, amp, use_depth=use_depth)
+                        val_score = evaluate(model, val_loader, device, amp, use_depth=use_depth, only_depth=only_depth)
                         scheduler.step(val_score)
 
                         logging.info('Validation Dice score: {}'.format(val_score))
                         try:
+                            #convert mask_pred to a binary mask for wandb logging
+                            wandb_mask_pred = (F.sigmoid(masks_pred.squeeze(1)) > 0.5).float()
+                    
                             experiment.log({
                                 'learning rate': optimizer.param_groups[0]['lr'],
                                 'validation Dice': val_score,
                                 'images': wandb.Image(images[0].cpu()),
                                 'masks': {
                                     'true': wandb.Image(true_masks[0].float().cpu()),
-                                    'pred': wandb.Image(masks_pred.argmax(dim=1)[0].float().cpu()),
+                                    'pred': wandb.Image(wandb_mask_pred[0].cpu())
                                 },
                                 'step': global_step,
                                 'epoch': epoch,
@@ -179,7 +209,7 @@ def train_model(
                         except:
                             pass
 
-        if save_checkpoint and epoch % 10 == 0:
+        if save_checkpoint and epoch % 1 == 0:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
             state_dict['mask_values'] = dataset.mask_values
@@ -191,7 +221,7 @@ def get_args():
     parser = argparse.ArgumentParser(description='Train the UNet on images and target masks')
     parser.add_argument('--epochs', '-e', metavar='E', type=int, default=500, help='Number of epochs')
     parser.add_argument('--batch-size', '-b', dest='batch_size', metavar='B', type=int, default=1, help='Batch size')
-    parser.add_argument('--learning-rate', '-l', metavar='LR', type=float, default=1e-5,
+    parser.add_argument('--learning-rate', '-l', metavar='LR', type=float, default=2e-6,
                         help='Learning rate', dest='lr')
     parser.add_argument('--load', '-f', type=str, default=False, help='Load model from a .pth file')
     parser.add_argument('--scale', '-s', type=float, default=0.5, help='Downscaling factor of the images')
@@ -202,6 +232,7 @@ def get_args():
     parser.add_argument('--classes', '-c', type=int, default=1, help='Number of classes')
 
     parser.add_argument('--use_depth', action='store_true', default=False, help='Use depth image')
+    parser.add_argument('--use_only_depth', action='store_true', default=False, help='Use only depth image')
 
     return parser.parse_args()
 
@@ -216,11 +247,21 @@ if __name__ == '__main__':
     # Change here to adapt to your data
     # n_channels=3 for RGB images
     # n_channels=4 for RGB-D images
+    # n_channels=1 for depth images
     # n_classes is the number of probabilities you want to get per pixel
-    if args.use_depth:
-        model = UNet(n_channels=4, n_classes=args.classes, bilinear=args.bilinear)
+
+    # first, check when use_only_depth is enabled, use_depth should also be enabled
+    if args.use_only_depth:
+        args.use_depth = True
+        print('use_depth is forced to be enabled because use_only_depth is enabled')
+
+    if args.use_depth and not args.use_only_depth:
+        model = UNet(n_channels=4, n_classes=args.classes, bilinear=args.bilinear) # RGB-D images
+    elif args.use_only_depth:
+        model = UNet(n_channels=1, n_classes=args.classes, bilinear=args.bilinear) # Depth images
     else:
-        model = UNet(n_channels=3, n_classes=args.classes, bilinear=args.bilinear)
+        model = UNet(n_channels=3, n_classes=args.classes, bilinear=args.bilinear) # RGB images
+
     model = model.to(memory_format=torch.channels_last)
 
     logging.info(f'Network:\n'
@@ -245,7 +286,8 @@ if __name__ == '__main__':
             img_scale=args.scale,
             val_percent=args.val / 100,
             amp=args.amp,
-            use_depth=args.use_depth
+            use_depth=args.use_depth,
+            only_depth=args.use_only_depth
         )
     except torch.cuda.OutOfMemoryError:
         logging.error('Detected OutOfMemoryError! '
@@ -262,5 +304,6 @@ if __name__ == '__main__':
             img_scale=args.scale,
             val_percent=args.val / 100,
             amp=args.amp,
-            use_depth=args.use_depth
+            use_depth=args.use_depth,
+            only_depth=args.use_only_depth
         )
