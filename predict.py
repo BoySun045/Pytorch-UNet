@@ -12,18 +12,23 @@ from utils.data_loading import BasicDataset
 from unet import UNet
 from utils.utils import plot_img_and_mask
 
-def predict_img(net,
-                full_img,
-                device,
-                scale_factor=1,
-                out_threshold=0.5):
+def predict_img(net, full_img, depth_img, device, scale_factor=1, out_threshold=0.5, use_depth=True):
     net.eval()
-    img = torch.from_numpy(BasicDataset.preprocess(None, full_img, scale_factor, is_mask=False))
-    img = img.unsqueeze(0)
-    img = img.to(device=device, dtype=torch.float32)
-
+    
+    # Preprocess the RGB image
+    img_processed = BasicDataset.preprocess(None, full_img, scale_factor, is_mask=False, is_depth=False)
+    
+    if use_depth:
+        # Preprocess the depth image
+        depth_processed = BasicDataset.preprocess(None, depth_img, scale_factor, is_mask=False, is_depth=True)
+        
+        # Concatenate the RGB image and depth map along the channel dimension
+        img_processed = np.concatenate([img_processed, depth_processed], axis=0)
+    
+    img_tensor = torch.from_numpy(img_processed).unsqueeze(0).to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
+    
     with torch.no_grad():
-        output = net(img).cpu()
+        output = net(img_tensor).cpu()
         output = F.interpolate(output, (full_img.size[1], full_img.size[0]), mode='bilinear')
         if net.n_classes > 1:
             mask = output.argmax(dim=1)
@@ -49,7 +54,8 @@ def get_args():
                         help='Scale factor for the input images')
     parser.add_argument('--bilinear', action='store_true', default=False, help='Use bilinear upsampling')
     parser.add_argument('--classes', '-c', type=int, default=1, help='Number of classes')
-    
+    parser.add_argument('--use_depth', '-d', action='store_true', help='Use depth images')
+
     return parser.parse_args()
 
 
@@ -102,7 +108,17 @@ if __name__ == '__main__':
     out_files = args.output
     out_overlay_files = args.save_overlay_output
 
-    net = UNet(n_channels=3, n_classes=args.classes, bilinear=args.bilinear)
+    if args.use_depth:
+        # depth file is in the same directory as the image file but with a different name, depth
+        depth_files = in_files.replace('image', 'depth')
+
+    if not os.path.exists(out_files):
+        os.makedirs(out_files)
+    if not os.path.exists(out_overlay_files):
+        os.makedirs(out_overlay_files)
+
+    n_channels_ = 3 if not args.use_depth else 4
+    net = UNet(n_channels=n_channels_, n_classes=args.classes, bilinear=args.bilinear)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info(f'Loading model {args.model}')
@@ -129,15 +145,32 @@ if __name__ == '__main__':
             out_overlay_imgs.append(os.path.join(out_overlay_files, f))
 
     print(in_imgs)
+
+    
+
     for i, filename in enumerate(in_imgs):
         logging.info(f'Predicting image {filename} ...')
         img = Image.open(filename)
-
-        mask = predict_img(net=net,
-                           full_img=img,
-                           scale_factor=args.scale,
-                           out_threshold=args.mask_threshold,
-                           device=device)
+        if args.use_depth:
+            depth_filename = os.path.join(depth_files, os.path.basename(filename).replace('img', 'depth'))
+            # depth is with png extension, not jpg, covert depth_filename to png
+            depth_filename = depth_filename.replace('.jpg', '.png')
+            depth = Image.open(depth_filename)
+            mask = predict_img(net=net, 
+                               full_img=img, 
+                               depth_img=depth, 
+                               device=device, 
+                               scale_factor=args.scale, 
+                               out_threshold=args.mask_threshold, 
+                               use_depth=args.use_depth)
+        else:
+            mask = predict_img(net=net, 
+                               full_img=img, 
+                               depth_img=None, 
+                               device=device, 
+                               scale_factor=args.scale, 
+                               out_threshold=args.mask_threshold, 
+                               use_depth=args.use_depth)
         # overlay the mask on the image
         overlay_img = overlay_img_with_mask(img, mask)
 

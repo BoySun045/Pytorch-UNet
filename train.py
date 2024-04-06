@@ -20,11 +20,11 @@ from utils.data_loading import BasicDataset, CarvanaDataset
 from utils.dice_score import dice_loss
 from torchvision.utils import save_image
 
-dir_img = Path('/media/boysun/Extreme Pro/one_image_dataset/image/')
-dir_mask = Path('/media/boysun/Extreme Pro/one_image_dataset/mask/')
-dir_depth = Path('/media/boysun/Extreme Pro/one_image_dataset/depth/')
-dir_checkpoint = Path('/media/boysun/Extreme Pro/one_image_dataset/')
-dir_debug = Path('/media/boysun/Extreme Pro/one_image_dataset/debug/')
+dir_img = Path('/media/boysun/Extreme Pro/one_image_dataset_2/image/')
+dir_mask = Path('/media/boysun/Extreme Pro/one_image_dataset_2/mask/')
+dir_depth = Path('/media/boysun/Extreme Pro/one_image_dataset_2/depth/')
+dir_checkpoint = Path('/media/boysun/Extreme Pro/one_image_dataset_2/')
+dir_debug = Path('/media/boysun/Extreme Pro/one_image_dataset_2/debug/')
 
 # make debug directory
 dir_debug.mkdir(parents=True, exist_ok=True)
@@ -68,7 +68,8 @@ def train_model(
         weight_decay: float = 1e-8,
         momentum: float = 0.999,
         gradient_clipping: float = 1.0,
-        use_depth: bool = False
+        use_depth: bool = False,
+        only_depth: bool = False
 ):
     # 1. Create dataset
     if use_depth:
@@ -136,7 +137,7 @@ def train_model(
                 # if batch_idx == 0:
                 #     save_debug_images(batch, epoch, batch_idx, prefix='train')
 
-                if not use_depth:
+                if not use_depth and not only_depth:  # RGB images
                     images, true_masks = batch['image'], batch['mask']
 
                     assert images.shape[1] == model.n_channels, \
@@ -145,7 +146,8 @@ def train_model(
                         'the images are loaded correctly.'
 
                     images = images.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
-                else: 
+                
+                elif use_depth and not only_depth:  # RGB-D images
                     images, true_masks, depth = batch['image'], batch['mask'], batch['depth']
 
                     assert images.shape[1] + depth.shape[1] == model.n_channels, \
@@ -156,7 +158,12 @@ def train_model(
                     images = images.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
                     depth = depth.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
                     images = torch.cat([images, depth], dim=1)
-
+                
+                elif only_depth: # Depth images
+                    depth = batch['depth']
+                    true_masks = batch['mask']
+                    images = depth.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
+                
                 true_masks = true_masks.to(device=device, dtype=torch.long)
 
                 with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
@@ -217,7 +224,7 @@ def train_model(
                             if not (torch.isinf(value.grad) | torch.isnan(value.grad)).any():
                                 histograms['Gradients/' + tag] = wandb.Histogram(value.grad.data.cpu())
 
-                        val_score = evaluate(model, val_loader, device, amp, use_depth=use_depth)
+                        val_score = evaluate(model, val_loader, device, amp, use_depth=use_depth, only_depth=only_depth)
                         scheduler.step(val_score)
 
                         logging.info('Validation Dice score: {}'.format(val_score))
@@ -263,6 +270,7 @@ def get_args():
     parser.add_argument('--classes', '-c', type=int, default=1, help='Number of classes')
 
     parser.add_argument('--use_depth', action='store_true', default=False, help='Use depth image')
+    parser.add_argument('--use_only_depth', action='store_true', default=False, help='Use only depth image')
 
     return parser.parse_args()
 
@@ -277,11 +285,21 @@ if __name__ == '__main__':
     # Change here to adapt to your data
     # n_channels=3 for RGB images
     # n_channels=4 for RGB-D images
+    # n_channels=1 for depth images
     # n_classes is the number of probabilities you want to get per pixel
-    if args.use_depth:
-        model = UNet(n_channels=4, n_classes=args.classes, bilinear=args.bilinear)
+
+    # first, check when use_only_depth is enabled, use_depth should also be enabled
+    if args.use_only_depth:
+        args.use_depth = True
+        print('use_depth is forced to be enabled because use_only_depth is enabled')
+
+    if args.use_depth and not args.use_only_depth:
+        model = UNet(n_channels=4, n_classes=args.classes, bilinear=args.bilinear) # RGB-D images
+    elif args.use_only_depth:
+        model = UNet(n_channels=1, n_classes=args.classes, bilinear=args.bilinear) # Depth images
     else:
-        model = UNet(n_channels=3, n_classes=args.classes, bilinear=args.bilinear)
+        model = UNet(n_channels=3, n_classes=args.classes, bilinear=args.bilinear) # RGB images
+
     model = model.to(memory_format=torch.channels_last)
 
     logging.info(f'Network:\n'
@@ -306,7 +324,8 @@ if __name__ == '__main__':
             img_scale=args.scale,
             val_percent=args.val / 100,
             amp=args.amp,
-            use_depth=args.use_depth
+            use_depth=args.use_depth,
+            only_depth=args.use_only_depth
         )
     except torch.cuda.OutOfMemoryError:
         logging.error('Detected OutOfMemoryError! '
@@ -323,5 +342,6 @@ if __name__ == '__main__':
             img_scale=args.scale,
             val_percent=args.val / 100,
             amp=args.amp,
-            use_depth=args.use_depth
+            use_depth=args.use_depth,
+            only_depth=args.use_only_depth
         )
