@@ -112,6 +112,11 @@ class BasicDataset(Dataset):
             else:
                 img = img.transpose((2, 0, 1))
 
+            # depth should be with only one channel
+            if not img.shape[0] == 1:
+                # make it with only one channel but keep the same dimension (1, H, W)
+                img = img[0:1, ...]
+
             # normalize depth 
             img_min = img.min()
             img_max = img.max()

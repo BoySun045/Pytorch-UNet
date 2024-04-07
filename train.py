@@ -26,6 +26,13 @@ dir_depth = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/depth/')
 # dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_RGB_miniset/')
 dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_D_miniset/')
 
+# dir_img = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/image/')
+# dir_mask = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/mask/')
+# dir_depth = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/depth_anything/')
+# # dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_RGB_D_pred_miniset/')
+# # dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_RGB_D_pred_miniset/')
+# dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_D_pred_miniset/')
+
 # dir_img = Path('/cluster/project/cvg/boysun/MH3D_train_set_middle/image/')
 # dir_mask = Path('/cluster/project/cvg/boysun/MH3D_train_set_middle/mask/')
 # dir_depth = Path('/cluster/project/cvg/boysun/MH3D_train_set_middle/depth/')
@@ -123,19 +130,22 @@ def train_model(
                 
                 elif use_depth and not only_depth:  # RGB-D images
                     images, true_masks, depth = batch['image'], batch['mask'], batch['depth']
-
+                    print("image channel plus depth channel: ", images.shape[1] + depth.shape[1])
                     assert images.shape[1] + depth.shape[1] == model.n_channels, \
                         f'Network has been defined with {model.n_channels} input channels, ' \
-                        f'but loaded images have {images.shape[1]} channels. Please check that ' \
+                        f'but loaded images have {images.shape[1] + depth.shape[1]}  channels. Please check that ' \
                         'the images are loaded correctly.'
-
                     images = images.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
                     depth = depth.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
                     images = torch.cat([images, depth], dim=1)
                 
                 elif only_depth: # Depth images
-                    depth = batch['depth']
-                    true_masks = batch['mask']
+                    assert batch['depth'].shape[1] == model.n_channels, \
+                        f'Network has been defined with {model.n_channels} input channels, ' \
+                        f'but loaded images have {batch["depth"].shape[1]} channels. Please check that ' \
+                        'the images are loaded correctly.'
+                        
+                    true_masks, depth = batch['mask'], batch['depth']
                     images = depth.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
                 
                 true_masks = true_masks.to(device=device, dtype=torch.long)
@@ -143,9 +153,6 @@ def train_model(
                 with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
                     masks_pred = model(images)
                     if model.n_classes == 1:
-                        #since this is a binary classification problem, print out the correct predicted labels ratio,
-                        # calculate the number of correct predicted labels
-                        # and calculate the accuracy
                         loss = criterion(masks_pred.squeeze(1), true_masks.float())
                         loss += dice_loss(F.sigmoid(masks_pred.squeeze(1)), true_masks.float(), multiclass=False)
         
@@ -208,8 +215,13 @@ def train_model(
                             })
                         except:
                             pass
+                
+        if n_train > 10000:
+            save_every_spoch = 1
+        else:
+            save_every_spoch = 5
 
-        if save_checkpoint and epoch % 1 == 0:
+        if save_checkpoint and epoch % save_every_spoch == 0:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
             state_dict['mask_values'] = dataset.mask_values
