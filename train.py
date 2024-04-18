@@ -213,7 +213,7 @@ def train_model(
 
                 # Evaluation round
                 division_step = (n_train // (5 * batch_size))
-                # division_step = 1
+                division_step = 1
                 if division_step > 0:
                     if global_step % division_step == 0:
                         histograms = {}
@@ -247,7 +247,7 @@ def train_model(
                         except:
                             pass
 
-        if save_checkpoint and epoch % 10 == 0:
+        if save_checkpoint and epoch % 1 == 0:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
             state_dict['mask_values'] = dataset.mask_values

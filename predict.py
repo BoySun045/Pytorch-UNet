@@ -12,6 +12,7 @@ from utils.data_loading import BasicDataset
 from unet import UNet
 from utils.utils import plot_img_and_mask
 
+
 def predict_img(net, full_img, depth_img, device, scale_factor=1, out_threshold=0.5, use_depth=True):
     net.eval()
     

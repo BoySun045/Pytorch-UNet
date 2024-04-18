@@ -137,9 +137,9 @@ def plot_depth_maps(depth_image, depth_pairs, downsample_factor=1):
     ax3.quiver(camera_x, camera_y, 0, 0, 0, 1, length=50, color='blue', label='View Direction', arrow_length_ratio=0.1)
     ax3.legend()
 
-    ax1.view_init(elev=-72, azim=-60, roll=0)
-    ax2.view_init(elev=-72, azim=-60, roll=0)
-    ax3.view_init(elev=-72, azim=-60, roll=0)
+    ax1.view_init(elev=-58, azim=-84, roll=0)
+    ax2.view_init(elev=-58, azim=-84, roll=0)
+    ax3.view_init(elev=-58, azim=-84, roll=0)
 
     plt.show()
 def main():
