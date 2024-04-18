@@ -17,14 +17,23 @@ import wandb
 from evaluate import evaluate
 from unet import UNet
 from utils.data_loading import BasicDataset, CarvanaDataset
-from utils.dice_score import dice_loss
+from utils.regression_loss import mse_loss, mae_loss
 from torchvision.utils import save_image
 
-dir_img = Path('/media/boysun/Extreme Pro/one_image_dataset_2/image/')
-dir_mask = Path('/media/boysun/Extreme Pro/one_image_dataset_2/mask/')
-dir_depth = Path('/media/boysun/Extreme Pro/one_image_dataset_2/depth/')
-dir_checkpoint = Path('/media/boysun/Extreme Pro/one_image_dataset_2/')
+# dir_img = Path('/media/boysun/Extreme Pro/one_image_dataset_2/image/')
+# dir_mask = Path('/media/boysun/Extreme Pro/one_image_dataset_2/mask/')
+# dir_depth = Path('/media/boysun/Extreme Pro/one_image_dataset_2/depth/')
+# dir_checkpoint = Path('/media/boysun/Extreme Pro/one_image_dataset_2/')
+# dir_debug = Path('/media/boysun/Extreme Pro/one_image_dataset_2/debug/')
+
+data_folder = "/media/boysun/Extreme Pro/Actmap_v2_mini/"
+
+dir_img = Path(f'{data_folder}/image/')
+dir_mask = Path(f'{data_folder}/weighted_mask/')
+dir_depth = Path(f'{data_folder}/depth/')
+dir_checkpoint = Path(f'{data_folder}/')
 dir_debug = Path('/media/boysun/Extreme Pro/one_image_dataset_2/debug/')
+
 
 # make debug directory
 dir_debug.mkdir(parents=True, exist_ok=True)
@@ -95,7 +104,7 @@ def train_model(
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
     # (Initialize logging)
-    experiment = wandb.init(project='U-Net', resume='allow', anonymous='must')
+    experiment = wandb.init(project='U-Net-Heatmap', resume='allow', anonymous='must')
     experiment.config.update(
         dict(epochs=epochs, batch_size=batch_size, learning_rate=learning_rate,
              val_percent=val_percent, save_checkpoint=save_checkpoint, img_scale=img_scale, amp=amp)
@@ -118,13 +127,11 @@ def train_model(
     #                           lr=learning_rate, weight_decay=weight_decay, momentum=momentum, foreach=True)
     #use adam optimizer
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=5)  # goal: maximize Dice score
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=5)
+
     grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
+    loss_fn = mse_loss
 
-    pos_weight = torch.tensor([2.0]).to(device)
-    loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-
-    criterion = nn.CrossEntropyLoss() if model.n_classes > 1 else loss_fn
     global_step = 0
 
     # 5. Begin training
@@ -164,36 +171,12 @@ def train_model(
                     true_masks = batch['mask']
                     images = depth.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
                 
-                true_masks = true_masks.to(device=device, dtype=torch.long)
+                true_masks = true_masks.to(device=device, dtype=torch.float32)
 
                 with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
                     masks_pred = model(images)
-                    if model.n_classes == 1:
-                        #since this is a binary classification problem, print out the correct predicted labels ratio,
-                        # calculate the number of correct predicted labels
-                        # and calculate the accuracy
-                        print(f'number of pixels in the mask: {true_masks.numel()}')
-                        print(f'number of pixels in the predicted mask: {masks_pred.numel()}')
-                        print(f"number of positive pixels in the mask: {true_masks.sum()}")
-                        print(f"number of positive pixels in the predicted mask: {masks_pred.sum()}")
-                        print(f"number of negative pixels in the mask: {true_masks.numel() - true_masks.sum()}")
-                        print(f"number of negative pixels in the predicted mask: {masks_pred.numel() - masks_pred.sum()}")
-                        print(f"number of true positive pixels: {(true_masks * masks_pred).sum()}")
-                        print(f"number of false positive pixels: {(true_masks * (1 - masks_pred)).sum()}")
-                        print(f"number of false negative pixels: {((1 - true_masks) * masks_pred).sum()}")
-                        print(f"number of true negative pixels: {((1 - true_masks) * (1 - masks_pred)).sum()}")
-
-                        loss = criterion(masks_pred.squeeze(1), true_masks.float())
-                        print(f'Loss: {loss}')
-                        loss += dice_loss(F.sigmoid(masks_pred.squeeze(1)), true_masks.float(), multiclass=False)
-                        print(f'Loss after dice loss: {loss}')
-                    else:
-                        loss = criterion(masks_pred, true_masks)
-                        loss += dice_loss(
-                            F.softmax(masks_pred, dim=1).float(),
-                            F.one_hot(true_masks, model.n_classes).permute(0, 3, 1, 2).float(),
-                            multiclass=True
-                        )
+                    masks_pred = masks_pred.squeeze(1)
+                    loss = loss_fn(masks_pred, true_masks)
 
                 optimizer.zero_grad(set_to_none=True)
                 grad_scaler.scale(loss).backward()
@@ -224,21 +207,19 @@ def train_model(
                             if not (torch.isinf(value.grad) | torch.isnan(value.grad)).any():
                                 histograms['Gradients/' + tag] = wandb.Histogram(value.grad.data.cpu())
 
-                        val_score = evaluate(model, val_loader, device, amp, use_depth=use_depth, only_depth=only_depth)
-                        scheduler.step(val_score)
+                        val_loss = evaluate(model, val_loader, device, amp, use_depth=use_depth, only_depth=only_depth)
+                        scheduler.step(val_loss)
 
-                        logging.info('Validation Dice score: {}'.format(val_score))
+                        logging.info('validation avg loss: {}'.format(val_loss))
                         try:
-                            #convert mask_pred to a binary mask for wandb logging
-                            wandb_mask_pred = (F.sigmoid(masks_pred.squeeze(1)) > 0.5).float()
-                    
+                                        
                             experiment.log({
                                 'learning rate': optimizer.param_groups[0]['lr'],
-                                'validation Dice': val_score,
+                                'validation avg loss': val_loss,
                                 'images': wandb.Image(images[0].cpu()),
                                 'masks': {
                                     'true': wandb.Image(true_masks[0].float().cpu()),
-                                    'pred': wandb.Image(wandb_mask_pred[0].cpu())
+                                    'pred': wandb.Image(masks_pred[0].float().cpu())
                                 },
                                 'step': global_step,
                                 'epoch': epoch,
@@ -247,7 +228,7 @@ def train_model(
                         except:
                             pass
 
-        if save_checkpoint and epoch % 1 == 0:
+        if save_checkpoint and epoch % 5 == 0:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
             state_dict['mask_values'] = dataset.mask_values

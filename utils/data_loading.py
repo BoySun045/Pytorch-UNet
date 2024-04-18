@@ -11,38 +11,25 @@ from os.path import splitext, isfile, join
 from pathlib import Path
 from torch.utils.data import Dataset
 from tqdm import tqdm
+import scipy.ndimage
 
-
-def load_image(filename):
+def load_image(filename, np_key=None):
     ext = splitext(filename)[1]
     if ext == '.npy':
-        return Image.fromarray(np.load(filename))
+        # print(f'Loading {filename} as numpy array')
+        # print("max value: ", np.load(filename).max())
+        # print("min value: ", np.load(filename).min())
+        return np.load(filename)[np_key] if np_key is not None else np.load(filename)
     elif ext == '.npz':
-        return Image.fromarray(np.load(filename)['depth'])
+        return np.load(filename)[np_key] if np_key is not None else np.load(filename)
     elif ext in ['.pt', '.pth']:
         return Image.fromarray(torch.load(filename).numpy())
     else:
         return Image.open(filename)
 
 
-def unique_mask_values(idx, mask_dir, mask_suffix):
-    # print("mask_dir: ", mask_dir)
-    # print("mask_suffix: ", mask_suffix)
-    # print("idx: ", idx)
-    mask_file = list(mask_dir.glob(idx + mask_suffix + '.*'))[0]
-    # print("mask_file: ", mask_file)
-    mask = np.asarray(load_image(mask_file))
-    if mask.ndim == 2:
-        return np.unique(mask)
-    elif mask.ndim == 3:
-        mask = mask.reshape(-1, mask.shape[-1])
-        return np.unique(mask, axis=0)
-    else:
-        raise ValueError(f'Loaded masks should have 2 or 3 dimensions, found {mask.ndim}')
-
-
 class BasicDataset(Dataset):
-    def __init__(self, images_dir: str, mask_dir: str, depth_dir: str, scale: float = 1.0, mask_suffix: str = ''):
+    def __init__(self, images_dir: str, mask_dir: str, depth_dir: str, scale: float = 1.0, mask_suffix: str = '', weight_global_max: float = 3000.0):
         self.images_dir = Path(images_dir)
         self.mask_dir = Path(mask_dir)
         assert 0 < scale <= 1, 'Scale must be between 0 and 1'
@@ -62,41 +49,40 @@ class BasicDataset(Dataset):
         logging.info(f'Creating dataset with {len(self.ids)} examples')
         logging.info('Scanning mask files to determine unique values')
 
-        with Pool() as p:
-            unique = list(tqdm(
-                p.imap(partial(unique_mask_values, mask_dir=self.mask_dir, mask_suffix=self.mask_suffix), self.ids),
-                total=len(self.ids)
-            ))
-
-        # the above loop is too slow when the number of images is large, since I know for each image the mask values are the same and it is [0, 1], I can just hard code it
-        unique = [np.array([0, 1]) for _ in self.ids]
-
-
-        self.mask_values = list(sorted(np.unique(np.concatenate(unique), axis=0).tolist()))
-        logging.info(f'Unique mask values: {self.mask_values}')
+        assert weight_global_max > 0, 'Global max value for mask normalization must be greater than 0'
+        self.weight_global_max = weight_global_max
 
     def __len__(self):
         return len(self.ids)
 
     @staticmethod
-    def preprocess(mask_values, pil_img, scale, is_mask, is_depth):
-        w, h = pil_img.size
+    def preprocess(pil_img, scale, is_mask, is_depth, mask_weight_global_max = None):
+        if not is_mask:
+            w, h = pil_img.size
+        else:
+            w, h = pil_img.shape
         newW, newH = int(scale * w), int(scale * h)
         assert newW > 0 and newH > 0, 'Scale is too small, resized images would have no pixel'
-        pil_img = pil_img.resize((newW, newH), resample=Image.NEAREST if is_mask else Image.BICUBIC)
-        img = np.asarray(pil_img)
 
         if is_mask:
-            mask = np.zeros((newH, newW), dtype=np.int64)
-            for i, v in enumerate(mask_values):
-                if img.ndim == 2:
-                    mask[img == v] = i
-                else:
-                    mask[(img == v).all(-1)] = i
+        # Mask is a numpy array already
+            img = pil_img.astype(np.float32)
+            # print(f'Mask max value: {img.max()}')
+            # print(f'Mask min value: {img.min()}')
 
-            return mask
+            # Resize using bicubic interpolation
+            zoom_factors = (scale, scale)
+            img = scipy.ndimage.zoom(img, zoom_factors, order=3)  # order=3 for bicubic
+
+            # check if the mask is normalized, if not, normalize it with the global max value, and clip it to 1
+            if img.max() > 1 and mask_weight_global_max is not None:
+                img = np.clip(img / mask_weight_global_max, 0, 1)
+                # print(f'Normalizing mask with global max value {mask_weight_global_max}')
+            return img
 
         if not is_depth:
+            pil_img = pil_img.resize((newW, newH), resample=Image.BICUBIC)
+            img = np.asarray(pil_img)
             if img.ndim == 2:
                 img = img[np.newaxis, ...]
             else:
@@ -108,6 +94,8 @@ class BasicDataset(Dataset):
             return img
         
         if is_depth:
+            pil_img = pil_img.resize((newW, newH), resample=Image.BICUBIC)
+            img = np.asarray(pil_img)
             if img.ndim == 2:
                 img = img[np.newaxis, ...]
             else:
@@ -124,34 +112,33 @@ class BasicDataset(Dataset):
         name = self.ids[idx]
         mask_file = list(self.mask_dir.glob(name + self.mask_suffix + '.*'))
         img_file = list(self.images_dir.glob(name + '.*'))
-
         if self.depth_dir is not None:
             depth_file = list(self.depth_dir.glob(name + '.*'))
             assert len(depth_file) == 1, f'Either no depth image or multiple depth images found for the ID {name}: {depth_file}'
             depth = load_image(depth_file[0])
-            depth = self.preprocess(self.mask_values, depth, self.scale, is_mask=False, is_depth=True)
+            depth = self.preprocess(depth, self.scale, is_mask=False, is_depth=True)
 
         assert len(img_file) == 1, f'Either no image or multiple images found for the ID {name}: {img_file}'
         assert len(mask_file) == 1, f'Either no mask or multiple masks found for the ID {name}: {mask_file}'
-        mask = load_image(mask_file[0])
+        mask = load_image(mask_file[0], np_key='weights')
         img = load_image(img_file[0])
 
-        assert img.size == mask.size, \
-            f'Image and mask {name} should be the same size, but are {img.size} and {mask.size}'
+        # assert img.size == mask.size, \
+        #     f'Image and mask {name} should be the same size, but are {img.size} and {mask.size}'
 
-        img = self.preprocess(self.mask_values, img, self.scale, is_mask=False, is_depth=False)
-        mask = self.preprocess(self.mask_values, mask, self.scale, is_mask=True, is_depth=False)
+        img = self.preprocess(img, self.scale, is_mask=False, is_depth=False)
+        mask = self.preprocess(mask, self.scale, is_mask=True, is_depth=False, mask_weight_global_max=self.weight_global_max)
 
         if self.depth_dir is not None:
             return {
                 'image': torch.as_tensor(img.copy()).float().contiguous(),
-                'mask': torch.as_tensor(mask.copy()).long().contiguous(),
+                'mask': torch.as_tensor(mask.copy()).float().contiguous(),
                 'depth': torch.as_tensor(depth.copy()).float().contiguous()
             }
         else:
             return {
                 'image': torch.as_tensor(img.copy()).float().contiguous(),
-                'mask': torch.as_tensor(mask.copy()).long().contiguous()
+                'mask': torch.as_tensor(mask.copy()).float().contiguous()
             }
 
 

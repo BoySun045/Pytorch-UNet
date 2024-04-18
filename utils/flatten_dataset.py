@@ -39,7 +39,7 @@ args = parser.parse_args()
 base_dir = Path(args.base_dir)
 flat_data_dir = Path(args.flat_data_dir)
 flat_images_dir = Path(f'{args.flat_data_dir}/image')
-flat_masks_dir = Path(f'{args.flat_data_dir}/mask')
+flat_masks_dir = Path(f'{args.flat_data_dir}/weighted_mask')
 flat_depths_dir = Path(f'{args.flat_data_dir}/depth')
 
 flat_data_dir.mkdir(parents=True, exist_ok=True)
@@ -58,15 +58,17 @@ for scene_dir in tqdm(directory_path_list):
     print(f"Processing scene: {scene_name}")
 
     image_ids = extract_ids(scene_dir / 'image', pattern)
-    mask_ids = extract_ids(scene_dir / 'mask', pattern)
+    mask_ids = extract_ids(scene_dir / 'weighted_mask', pattern)
     depth_ids = extract_ids(scene_dir / 'depth', pattern)
 
     # Find common IDs across image, depth, and mask
     common_ids = image_ids.intersection(mask_ids).intersection(depth_ids)
 
     # Process each file type (images, masks, depths)
-    for file_type, output_dir in [('image', flat_images_dir), ('mask', flat_masks_dir), ('depth', flat_depths_dir)]:
+    for file_type, output_dir in [('image', flat_images_dir), ('weighted_mask', flat_masks_dir), ('depth', flat_depths_dir)]:
         current_dir = scene_dir / file_type
+        # print(f"Processing {file_type} files...")
+        # print(f"Current directory: {current_dir}")
         if current_dir.exists():
             for file in current_dir.iterdir():
                 if file.is_file():
