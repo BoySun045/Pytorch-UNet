@@ -76,5 +76,10 @@ class OutConv(nn.Module):
 
     def forward(self, x):
         x = self.conv(x)
-        x = self.activation(x)
+        # print("min before activation: ", x.min())
+        # x = self.activation(x)
+        # print("x shape: ", x.shape)
+        # print("min: ", x.min())
+        # print("max: ", x.max())
+        # print("x ", x)
         return x

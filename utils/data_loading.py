@@ -29,7 +29,7 @@ def load_image(filename, np_key=None):
 
 
 class BasicDataset(Dataset):
-    def __init__(self, images_dir: str, mask_dir: str, depth_dir: str, scale: float = 1.0, mask_suffix: str = '', weight_global_max: float = 3000.0):
+    def __init__(self, images_dir: str, mask_dir: str, depth_dir: str, scale: float = 1.0, mask_suffix: str = '', weight_global_max: float = 2000.0):
         self.images_dir = Path(images_dir)
         self.mask_dir = Path(mask_dir)
         assert 0 < scale <= 1, 'Scale must be between 0 and 1'
@@ -78,21 +78,12 @@ class BasicDataset(Dataset):
             if img.max() > 1 and mask_weight_global_max is not None:
                 img = np.clip(img / mask_weight_global_max, 0, 1)
                 # print(f'Normalizing mask with global max value {mask_weight_global_max}')
+                # print(f'New mask max value: {img.max()}')
+                # print(f'New mask min value: {img.min()}')
+            # change into binary mask
+            img = (img > 0.0).astype(np.int32)
             return img
 
-        if not is_depth:
-            pil_img = pil_img.resize((newW, newH), resample=Image.BICUBIC)
-            img = np.asarray(pil_img)
-            if img.ndim == 2:
-                img = img[np.newaxis, ...]
-            else:
-                img = img.transpose((2, 0, 1))
-
-            if (img > 1).any():
-                img = img / 255.0
-
-            return img
-        
         if is_depth:
             pil_img = pil_img.resize((newW, newH), resample=Image.BICUBIC)
             img = np.asarray(pil_img)
@@ -107,6 +98,21 @@ class BasicDataset(Dataset):
             img = (img - img_min) / (img_max - img_min)
 
             return img
+        
+        if not is_depth and not is_mask:
+            pil_img = pil_img.resize((newW, newH), resample=Image.BICUBIC)
+            img = np.asarray(pil_img)
+            if img.ndim == 2:
+                img = img[np.newaxis, ...]
+            else:
+                img = img.transpose((2, 0, 1))
+
+            if (img > 1).any():
+                img = img / 255.0
+
+            return img
+        
+
 
     def __getitem__(self, idx):
         name = self.ids[idx]
@@ -128,6 +134,8 @@ class BasicDataset(Dataset):
 
         img = self.preprocess(img, self.scale, is_mask=False, is_depth=False)
         mask = self.preprocess(mask, self.scale, is_mask=True, is_depth=False, mask_weight_global_max=self.weight_global_max)
+
+        assert img.shape[-2:] == mask.shape[-2:], f'Image and mask {name} should be the same size, but are {img.shape} and {mask.shape}'
 
         if self.depth_dir is not None:
             return {

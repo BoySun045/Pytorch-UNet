@@ -17,7 +17,8 @@ import wandb
 from evaluate import evaluate
 from unet import UNet
 from utils.data_loading import BasicDataset, CarvanaDataset
-from utils.regression_loss import mse_loss, mae_loss
+from utils.regression_loss import mse_loss, weighted_mse_loss, mae_loss
+from utils.dice_score import dice_coeff, dice_loss
 from torchvision.utils import save_image
 
 # dir_img = Path('/media/boysun/Extreme Pro/one_image_dataset_2/image/')
@@ -26,7 +27,8 @@ from torchvision.utils import save_image
 # dir_checkpoint = Path('/media/boysun/Extreme Pro/one_image_dataset_2/')
 # dir_debug = Path('/media/boysun/Extreme Pro/one_image_dataset_2/debug/')
 
-data_folder = "/media/boysun/Extreme Pro/Actmap_v2_mini/"
+# data_folder = "/media/boysun/Extreme Pro/Actmap_v2_mini/"
+data_folder = "/media/boysun/Extreme Pro/one_image_dataset_2/"
 
 dir_img = Path(f'{data_folder}/image/')
 dir_mask = Path(f'{data_folder}/weighted_mask/')
@@ -74,7 +76,7 @@ def train_model(
         save_checkpoint: bool = True,
         img_scale: float = 0.5,
         amp: bool = False,
-        weight_decay: float = 1e-8,
+        weight_decay: float = 1e-7,
         momentum: float = 0.999,
         gradient_clipping: float = 1.0,
         use_depth: bool = False,
@@ -127,13 +129,16 @@ def train_model(
     #                           lr=learning_rate, weight_decay=weight_decay, momentum=momentum, foreach=True)
     #use adam optimizer
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=5)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', patience=5, min_lr=2e-7, factor=0.5)
 
     grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
-    loss_fn = mse_loss
-
+    # loss_fn = mse_loss
+    # loss_fn = weighted_mse_loss
+    # loss_fn = weighted_mse_loss
+    pos_weight = torch.tensor([2.0]).to(device)
+    loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    criterion = nn.CrossEntropyLoss() if model.n_classes > 1 else loss_fn   
     global_step = 0
-
     # 5. Begin training
     for epoch in range(1, epochs + 1):
         model.train()
@@ -175,12 +180,22 @@ def train_model(
 
                 with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
                     masks_pred = model(images)
-                    masks_pred = masks_pred.squeeze(1)
-                    loss = loss_fn(masks_pred, true_masks)
+                    
+                    # heatmap regression
+                    # masks_pred = masks_pred.squeeze(1)
+                    # loss = loss_fn(masks_pred, true_masks)
+                    
+                    # binary classification
+                    # mask prediction is a probability map after sigmoid, so we need to convert it to binary mask
+                    loss = criterion(masks_pred.squeeze(1), true_masks.float())
+                    print(f'Loss: {loss}')
+                    loss += dice_loss(F.sigmoid(masks_pred.squeeze(1)), true_masks.float(), multiclass=False)
+                    print(f'Loss after dice loss: {loss}')
+                    
 
                 optimizer.zero_grad(set_to_none=True)
                 grad_scaler.scale(loss).backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clipping)
+                # torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clipping)
                 grad_scaler.step(optimizer)
                 grad_scaler.update()
 
@@ -228,7 +243,7 @@ def train_model(
                         except:
                             pass
 
-        if save_checkpoint and epoch % 5 == 0:
+        if save_checkpoint and epoch % 200 == 0:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
             state_dict['mask_values'] = dataset.mask_values
