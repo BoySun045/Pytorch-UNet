@@ -17,6 +17,10 @@ def load_image(filename):
     ext = splitext(filename)[1]
     if ext == '.npy':
         return Image.fromarray(np.load(filename))
+    if ext == '.npz':
+        weights = np.load(filename)['weights']
+        # weights is not binary, convert it to binary
+        return Image.fromarray((weights > 0.01).astype(np.uint8))
     elif ext in ['.pt', '.pth']:
         return Image.fromarray(torch.load(filename).numpy())
     else:
@@ -49,11 +53,14 @@ class BasicDataset(Dataset):
 
         logging.info(f'Creating dataset with {len(self.ids)} examples')
         logging.info('Scanning mask files to determine unique values')
-        with Pool() as p:
-            unique = list(tqdm(
-                p.imap(partial(unique_mask_values, mask_dir=self.mask_dir, mask_suffix=self.mask_suffix), self.ids),
-                total=len(self.ids)
-            ))
+        # with Pool() as p:
+        #     unique = list(tqdm(
+        #         p.imap(partial(unique_mask_values, mask_dir=self.mask_dir, mask_suffix=self.mask_suffix), self.ids),
+        #         total=len(self.ids)
+        #     ))
+        
+        # the above loop is too slow when the number of images is large, since I know for each image the mask values are the same and it is [0, 1], I can just hard code it
+        unique = [np.array([0, 1]) for _ in self.ids]
 
         self.mask_values = list(sorted(np.unique(np.concatenate(unique), axis=0).tolist()))
         logging.info(f'Unique mask values: {self.mask_values}')
@@ -93,6 +100,7 @@ class BasicDataset(Dataset):
     def __getitem__(self, idx):
         name = self.ids[idx]
         mask_file = list(self.mask_dir.glob(name + self.mask_suffix + '.*'))
+        # print(mask_file)
         img_file = list(self.images_dir.glob(name + '.*'))
 
         assert len(img_file) == 1, f'Either no image or multiple images found for the ID {name}: {img_file}'
@@ -114,4 +122,4 @@ class BasicDataset(Dataset):
 
 class CarvanaDataset(BasicDataset):
     def __init__(self, images_dir, mask_dir, scale=1):
-        super().__init__(images_dir, mask_dir, scale, mask_suffix='_mask')
+        super().__init__(images_dir, mask_dir, scale, mask_suffix='')

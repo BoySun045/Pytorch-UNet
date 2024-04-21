@@ -19,9 +19,15 @@ from unet import UNet
 from utils.data_loading import BasicDataset, CarvanaDataset
 from utils.dice_score import dice_loss
 
-dir_img = Path('./data/imgs/')
-dir_mask = Path('./data/masks/')
-dir_checkpoint = Path('./checkpoints/')
+dir_path = Path("/media/boysun/Extreme Pro/one_image_dataset")
+dir_img = Path(dir_path / 'image/')
+dir_mask = Path(dir_path / 'mask/')
+dir_checkpoint = Path(dir_path / 'checkpoints/')
+
+dir_path = Path("/media/boysun/Extreme Pro/one_image_dataset_2")
+dir_img = Path(dir_path / 'image/')
+dir_mask = Path(dir_path / 'weighted_mask/')
+dir_checkpoint = Path(dir_path / 'checkpoints/')
 
 
 def train_model(
@@ -55,7 +61,7 @@ def train_model(
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
     # (Initialize logging)
-    experiment = wandb.init(project='U-Net', resume='allow', anonymous='must')
+    experiment = wandb.init(project='U-Net-debug', resume='allow', anonymous='must')
     experiment.config.update(
         dict(epochs=epochs, batch_size=batch_size, learning_rate=learning_rate,
              val_percent=val_percent, save_checkpoint=save_checkpoint, img_scale=img_scale, amp=amp)
@@ -78,7 +84,11 @@ def train_model(
                               lr=learning_rate, weight_decay=weight_decay, momentum=momentum, foreach=True)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=5)  # goal: maximize Dice score
     grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
-    criterion = nn.CrossEntropyLoss() if model.n_classes > 1 else nn.BCEWithLogitsLoss()
+ 
+ 
+    pos_weight = torch.tensor([5.0]).to(device)
+    loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    criterion = nn.CrossEntropyLoss() if model.n_classes > 1 else loss_fn
     global_step = 0
 
     # 5. Begin training
@@ -128,6 +138,7 @@ def train_model(
 
                 # Evaluation round
                 division_step = (n_train // (5 * batch_size))
+                division_step = 5
                 if division_step > 0:
                     if global_step % division_step == 0:
                         histograms = {}
@@ -140,7 +151,7 @@ def train_model(
 
                         val_score = evaluate(model, val_loader, device, amp)
                         scheduler.step(val_score)
-
+                        wandb_mask_pred = (F.sigmoid(masks_pred.squeeze(1)) > 0.5).float()
                         logging.info('Validation Dice score: {}'.format(val_score))
                         try:
                             experiment.log({
@@ -149,7 +160,7 @@ def train_model(
                                 'images': wandb.Image(images[0].cpu()),
                                 'masks': {
                                     'true': wandb.Image(true_masks[0].float().cpu()),
-                                    'pred': wandb.Image(masks_pred.argmax(dim=1)[0].float().cpu()),
+                                    'pred': wandb.Image(wandb_mask_pred[0].cpu())
                                 },
                                 'step': global_step,
                                 'epoch': epoch,
@@ -214,6 +225,7 @@ if __name__ == '__main__':
             epochs=args.epochs,
             batch_size=args.batch_size,
             learning_rate=args.lr,
+            save_checkpoint=False,
             device=device,
             img_scale=args.scale,
             val_percent=args.val / 100,
