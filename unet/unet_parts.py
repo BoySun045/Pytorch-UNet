@@ -13,10 +13,10 @@ class DoubleConv(nn.Module):
         if not mid_channels:
             mid_channels = out_channels
         self.double_conv = nn.Sequential(
-            nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1, bias=False),
+            nn.Conv2d(in_channels, mid_channels, kernel_size=5, padding=2, bias=False),
             nn.BatchNorm2d(mid_channels),
             nn.ReLU(inplace=True),
-            nn.Conv2d(mid_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nn.Conv2d(mid_channels, out_channels, kernel_size=5, padding=2, bias=False),
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True)
         )
@@ -67,6 +67,13 @@ class Up(nn.Module):
         x = torch.cat([x2, x1], dim=1)
         return self.conv(x)
 
+class ScaledTanh(nn.Module):
+    def __init__(self):
+        super(ScaledTanh, self).__init__()
+
+    def forward(self, x):
+        return 0.5 * (torch.tanh(x) + 1.0)
+
 
 class OutConv(nn.Module):
     def __init__(self, in_channels, out_channels):
@@ -74,8 +81,10 @@ class OutConv(nn.Module):
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
         # add a relu layer for regression
         self.relu = nn.ReLU()
+        self.scale_tanh = ScaledTanh()
 
     def forward(self, x):
         x = self.conv(x)
-        x = self.relu(x)
+        # x = self.relu(x)
+        x = self.scale_tanh(x) 
         return x

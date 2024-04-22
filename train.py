@@ -25,7 +25,8 @@ from torchvision.utils import save_image
 
 # data_folder = "/media/boysun/Extreme Pro/Actmap_v2_mini/"
 
-dir_path = Path("/media/boysun/Extreme Pro/one_image_dataset_2")
+# dir_path = Path("/media/boysun/Extreme Pro/one_image_dataset_2")
+dir_path = Path("/media/boysun/Extreme Pro/Actmap_v2_mini/")
 dir_img = Path(dir_path / 'image/')
 dir_mask = Path(dir_path / 'weighted_mask/')
 dir_checkpoint = Path(dir_path / 'checkpoints/')
@@ -195,7 +196,7 @@ def train_model(
 
                 # Evaluation round
                 division_step = (n_train // (5 * batch_size))
-                division_step = 5
+                division_step = 10
                 if division_step > 0:
                     if global_step % division_step == 0:
                         histograms = {}

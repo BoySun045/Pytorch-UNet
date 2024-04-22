@@ -11,7 +11,7 @@ def weighted_mse_loss(input, target, increase_factor=2.0):
 
     # Generate weight map
     weight_map = torch.ones_like(target)
-    weight_map[target > 0.001] *= increase_factor
+    weight_map[target > 0.01] *= increase_factor
 
     # Calculate squared error
     squared_error = (input - target) ** 2
