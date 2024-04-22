@@ -9,14 +9,15 @@ from utils.dice_score import dice_coeff
 def evaluate(net, dataloader, device, amp, use_depth=False, only_depth=False):
     net.eval()
     num_val_batches = len(dataloader)
-    total_loss = 0
     
     # regresssion
-    # loss_fn = weighted_mse_loss
-    
+    loss_fn = weighted_mse_loss
+    regression_loss = 0
+
     # binary classification
-    loss_fn = dice_coeff
-    dice_score = 0
+    # loss_fn = dice_coeff
+    # dice_score = 0
+
     # iterate over the validation set
     with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
         for batch in tqdm(dataloader, total=num_val_batches, desc='Validation round', unit='batch', leave=False):
@@ -36,15 +37,14 @@ def evaluate(net, dataloader, device, amp, use_depth=False, only_depth=False):
 
             # predict the mask
             mask_pred = net(image)
-            mask_pred = mask_pred.squeeze(1)
 
-            # calculate the loss
-            # total_loss += mse_loss(mask_pred, mask_true).item()
-            mask_pred = (F.sigmoid(mask_pred) > 0.5).float()
-            # compute the Dice score
-            dice_score += dice_coeff(mask_pred.squeeze(1), mask_true, reduce_batch_first=False)
+            if net.n_classes == 1:
+                regression_loss += loss_fn(mask_pred, mask_true)
+            else:
+                print("for classification, number of classes should be 1")
+                return
 
     net.train()
-    avg_loss = total_loss / max(num_val_batches, 1)
+    avg_loss = regression_loss / max(num_val_batches, 1)
     
     return avg_loss

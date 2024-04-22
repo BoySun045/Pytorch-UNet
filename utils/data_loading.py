@@ -11,17 +11,15 @@ from os.path import splitext, isfile, join
 from pathlib import Path
 from torch.utils.data import Dataset
 from tqdm import tqdm
-import scipy.ndimage
 
-def load_image(filename, np_key=None):
+
+def load_image(filename):
     ext = splitext(filename)[1]
     if ext == '.npy':
-        # print(f'Loading {filename} as numpy array')
-        # print("max value: ", np.load(filename).max())
-        # print("min value: ", np.load(filename).min())
-        return np.load(filename)[np_key] if np_key is not None else np.load(filename)
-    elif ext == '.npz':
-        return np.load(filename)[np_key] if np_key is not None else np.load(filename)
+        return Image.fromarray(np.load(filename))
+    if ext == '.npz':
+        weights = np.load(filename)['weights']
+        return weights
     elif ext in ['.pt', '.pth']:
         return Image.fromarray(torch.load(filename).numpy())
     else:
@@ -57,60 +55,52 @@ class BasicDataset(Dataset):
 
     @staticmethod
     def preprocess(pil_img, scale, is_mask, is_depth, mask_weight_global_max = None):
-        if not is_mask:
-            w, h = pil_img.size
-        else:
-            w, h = pil_img.shape
-        newW, newH = int(scale * w), int(scale * h)
-        assert newW > 0 and newH > 0, 'Scale is too small, resized images would have no pixel'
+
+
 
         if is_mask:
-        # Mask is a numpy array already
-            img = pil_img.astype(np.float32)
-            # print(f'Mask max value: {img.max()}')
-            # print(f'Mask min value: {img.min()}')
+            # if it is mask, the input is directly a np array with weights value 
+            # do a resize, normalization and return is enough
+            mask = np.array(pil_img)
+            # resize the mask using nearest neighbor
+            mask = np.array(Image.fromarray(mask).resize((int(mask.shape[1] * scale), int(mask.shape[0] * scale),), resample=Image.NEAREST))
+            mask = np.clip(mask/mask_weight_global_max, 0, 1)
+            return mask
 
-            # Resize using bicubic interpolation
-            zoom_factors = (scale, scale)
-            img = scipy.ndimage.zoom(img, zoom_factors, order=3)  # order=3 for bicubic
-
-            # check if the mask is normalized, if not, normalize it with the global max value, and clip it to 1
-            if img.max() > 1 and mask_weight_global_max is not None:
-                img = np.clip(img / mask_weight_global_max, 0, 1)
-                # print(f'Normalizing mask with global max value {mask_weight_global_max}')
-                # print(f'New mask max value: {img.max()}')
-                # print(f'New mask min value: {img.min()}')
-            # change into binary mask
-            img = (img > 0.0).astype(np.int32)
-            return img
-
-        if is_depth:
-            pil_img = pil_img.resize((newW, newH), resample=Image.BICUBIC)
+        else:
+            w, h = pil_img.size
+            newW, newH = int(scale * w), int(scale * h)
+            assert newW > 0 and newH > 0, 'Scale is too small, resized images would have no pixel'
+            pil_img = pil_img.resize((newW, newH), resample=Image.NEAREST if is_mask else Image.BICUBIC)
             img = np.asarray(pil_img)
-            if img.ndim == 2:
-                img = img[np.newaxis, ...]
-            else:
-                img = img.transpose((2, 0, 1))
 
-            # normalize depth 
-            img_min = img.min()
-            img_max = img.max()
-            img = (img - img_min) / (img_max - img_min)
+            if is_depth:
+                pil_img = pil_img.resize((newW, newH), resample=Image.BICUBIC)
+                img = np.asarray(pil_img)
+                if img.ndim == 2:
+                    img = img[np.newaxis, ...]
+                else:
+                    img = img.transpose((2, 0, 1))
 
-            return img
-        
-        if not is_depth and not is_mask:
-            pil_img = pil_img.resize((newW, newH), resample=Image.BICUBIC)
-            img = np.asarray(pil_img)
-            if img.ndim == 2:
-                img = img[np.newaxis, ...]
-            else:
-                img = img.transpose((2, 0, 1))
+                # normalize depth 
+                img_min = img.min()
+                img_max = img.max()
+                img = (img - img_min) / (img_max - img_min)
 
-            if (img > 1).any():
-                img = img / 255.0
+                return img
+            
+            if not is_depth:
+                pil_img = pil_img.resize((newW, newH), resample=Image.BICUBIC)
+                img = np.asarray(pil_img)
+                if img.ndim == 2:
+                    img = img[np.newaxis, ...]
+                else:
+                    img = img.transpose((2, 0, 1))
 
-            return img
+                if (img > 1).any():
+                    img = img / 255.0
+
+                return img
         
 
 
@@ -126,7 +116,7 @@ class BasicDataset(Dataset):
 
         assert len(img_file) == 1, f'Either no image or multiple images found for the ID {name}: {img_file}'
         assert len(mask_file) == 1, f'Either no mask or multiple masks found for the ID {name}: {mask_file}'
-        mask = load_image(mask_file[0], np_key='weights')
+        mask = load_image(mask_file[0])
         img = load_image(img_file[0])
 
         # assert img.size == mask.size, \

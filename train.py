@@ -21,24 +21,17 @@ from utils.regression_loss import mse_loss, weighted_mse_loss, mae_loss
 from utils.dice_score import dice_coeff, dice_loss
 from torchvision.utils import save_image
 
-# dir_img = Path('/media/boysun/Extreme Pro/one_image_dataset_2/image/')
-# dir_mask = Path('/media/boysun/Extreme Pro/one_image_dataset_2/mask/')
-# dir_depth = Path('/media/boysun/Extreme Pro/one_image_dataset_2/depth/')
-# dir_checkpoint = Path('/media/boysun/Extreme Pro/one_image_dataset_2/')
-# dir_debug = Path('/media/boysun/Extreme Pro/one_image_dataset_2/debug/')
+
 
 # data_folder = "/media/boysun/Extreme Pro/Actmap_v2_mini/"
-data_folder = "/media/boysun/Extreme Pro/one_image_dataset_2/"
 
-dir_img = Path(f'{data_folder}/image/')
-dir_mask = Path(f'{data_folder}/weighted_mask/')
-dir_depth = Path(f'{data_folder}/depth/')
-dir_checkpoint = Path(f'{data_folder}/')
-dir_debug = Path('/media/boysun/Extreme Pro/one_image_dataset_2/debug/')
-
+dir_path = Path("/media/boysun/Extreme Pro/one_image_dataset_2")
+dir_img = Path(dir_path / 'image/')
+dir_mask = Path(dir_path / 'weighted_mask/')
+dir_checkpoint = Path(dir_path / 'checkpoints/')
 
 # make debug directory
-dir_debug.mkdir(parents=True, exist_ok=True)
+# dir_debug.mkdir(parents=True, exist_ok=True)
 
 def save_debug_images(batch, epoch, batch_idx, prefix='train', num_images=5):
     """
@@ -106,7 +99,7 @@ def train_model(
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
     # (Initialize logging)
-    experiment = wandb.init(project='U-Net-Heatmap', resume='allow', anonymous='must')
+    experiment = wandb.init(project='U-Net-debug', resume='allow', anonymous='must')
     experiment.config.update(
         dict(epochs=epochs, batch_size=batch_size, learning_rate=learning_rate,
              val_percent=val_percent, save_checkpoint=save_checkpoint, img_scale=img_scale, amp=amp)
@@ -124,21 +117,15 @@ def train_model(
         Mixed Precision: {amp}
     ''')
 
-    # 4. Set up the optimizer, the loss, the learning rate scheduler and the loss scaling for AMP
-    # optimizer = optim.RMSprop(model.parameters(),
-    #                           lr=learning_rate, weight_decay=weight_decay, momentum=momentum, foreach=True)
-    #use adam optimizer
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', patience=5, min_lr=2e-7, factor=0.5)
-
+      # 4. Set up the optimizer, the loss, the learning rate scheduler and the loss scaling for AMP
+    optimizer = optim.RMSprop(model.parameters(),
+                              lr=learning_rate, weight_decay=weight_decay, momentum=momentum, foreach=True)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=5, min_lr=1e-7)  # goal: minimize regression loss
     grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
-    # loss_fn = mse_loss
-    # loss_fn = weighted_mse_loss
-    # loss_fn = weighted_mse_loss
-    pos_weight = torch.tensor([2.0]).to(device)
-    loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-    criterion = nn.CrossEntropyLoss() if model.n_classes > 1 else loss_fn   
+ 
+    loss_fn = weighted_mse_loss
     global_step = 0
+    
     # 5. Begin training
     for epoch in range(1, epochs + 1):
         model.train()
@@ -183,19 +170,16 @@ def train_model(
                     
                     # heatmap regression
                     # masks_pred = masks_pred.squeeze(1)
-                    # loss = loss_fn(masks_pred, true_masks)
-                    
+                    loss = loss_fn(masks_pred.squeeze(1), true_masks.float())
+
                     # binary classification
                     # mask prediction is a probability map after sigmoid, so we need to convert it to binary mask
-                    loss = criterion(masks_pred.squeeze(1), true_masks.float())
-                    print(f'Loss: {loss}')
-                    loss += dice_loss(F.sigmoid(masks_pred.squeeze(1)), true_masks.float(), multiclass=False)
-                    print(f'Loss after dice loss: {loss}')
+                    # loss = criterion(masks_pred.squeeze(1), true_masks.float())
+                    # loss += dice_loss(F.sigmoid(masks_pred.squeeze(1)), true_masks.float(), multiclass=False)
                     
-
                 optimizer.zero_grad(set_to_none=True)
                 grad_scaler.scale(loss).backward()
-                # torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clipping)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clipping)
                 grad_scaler.step(optimizer)
                 grad_scaler.update()
 
@@ -211,7 +195,7 @@ def train_model(
 
                 # Evaluation round
                 division_step = (n_train // (5 * batch_size))
-                division_step = 1
+                division_step = 5
                 if division_step > 0:
                     if global_step % division_step == 0:
                         histograms = {}
@@ -225,6 +209,8 @@ def train_model(
                         val_loss = evaluate(model, val_loader, device, amp, use_depth=use_depth, only_depth=only_depth)
                         scheduler.step(val_loss)
 
+                        wandb_mask_pred = masks_pred.squeeze(1)
+
                         logging.info('validation avg loss: {}'.format(val_loss))
                         try:
                                         
@@ -234,7 +220,7 @@ def train_model(
                                 'images': wandb.Image(images[0].cpu()),
                                 'masks': {
                                     'true': wandb.Image(true_masks[0].float().cpu()),
-                                    'pred': wandb.Image(masks_pred[0].float().cpu())
+                                    'pred': wandb.Image(wandb_mask_pred[0].float().cpu())
                                 },
                                 'step': global_step,
                                 'epoch': epoch,
