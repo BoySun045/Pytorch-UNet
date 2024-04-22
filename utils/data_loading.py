@@ -19,24 +19,11 @@ def load_image(filename):
         return Image.fromarray(np.load(filename))
     if ext == '.npz':
         weights = np.load(filename)['weights']
-        # weights is not binary, convert it to binary
-        return Image.fromarray((weights > 0.01).astype(np.uint8))
+        return weights
     elif ext in ['.pt', '.pth']:
         return Image.fromarray(torch.load(filename).numpy())
     else:
         return Image.open(filename)
-
-
-def unique_mask_values(idx, mask_dir, mask_suffix):
-    mask_file = list(mask_dir.glob(idx + mask_suffix + '.*'))[0]
-    mask = np.asarray(load_image(mask_file))
-    if mask.ndim == 2:
-        return np.unique(mask)
-    elif mask.ndim == 3:
-        mask = mask.reshape(-1, mask.shape[-1])
-        return np.unique(mask, axis=0)
-    else:
-        raise ValueError(f'Loaded masks should have 2 or 3 dimensions, found {mask.ndim}')
 
 
 class BasicDataset(Dataset):
@@ -53,40 +40,31 @@ class BasicDataset(Dataset):
 
         logging.info(f'Creating dataset with {len(self.ids)} examples')
         logging.info('Scanning mask files to determine unique values')
-        # with Pool() as p:
-        #     unique = list(tqdm(
-        #         p.imap(partial(unique_mask_values, mask_dir=self.mask_dir, mask_suffix=self.mask_suffix), self.ids),
-        #         total=len(self.ids)
-        #     ))
-        
-        # the above loop is too slow when the number of images is large, since I know for each image the mask values are the same and it is [0, 1], I can just hard code it
-        unique = [np.array([0, 1]) for _ in self.ids]
-
-        self.mask_values = list(sorted(np.unique(np.concatenate(unique), axis=0).tolist()))
-        logging.info(f'Unique mask values: {self.mask_values}')
 
     def __len__(self):
         return len(self.ids)
 
     @staticmethod
-    def preprocess(mask_values, pil_img, scale, is_mask):
-        w, h = pil_img.size
-        newW, newH = int(scale * w), int(scale * h)
-        assert newW > 0 and newH > 0, 'Scale is too small, resized images would have no pixel'
-        pil_img = pil_img.resize((newW, newH), resample=Image.NEAREST if is_mask else Image.BICUBIC)
-        img = np.asarray(pil_img)
+    def preprocess(pil_img, scale, is_mask):
+
 
         if is_mask:
-            mask = np.zeros((newH, newW), dtype=np.int64)
-            for i, v in enumerate(mask_values):
-                if img.ndim == 2:
-                    mask[img == v] = i
-                else:
-                    mask[(img == v).all(-1)] = i
-
+            # if it is mask, the input is directly a np array with weights value 
+            # do a resize, normalization and return is enough
+            mask = np.array(pil_img)
+            global_mask_max = 3000
+            # resize the mask using nearest neighbor
+            mask = np.array(Image.fromarray(mask).resize((int(mask.shape[1] * scale), int(mask.shape[0] * scale),), resample=Image.NEAREST))
+            mask = np.clip(mask/global_mask_max, 0, 1)
             return mask
 
         else:
+            w, h = pil_img.size
+            newW, newH = int(scale * w), int(scale * h)
+            assert newW > 0 and newH > 0, 'Scale is too small, resized images would have no pixel'
+            pil_img = pil_img.resize((newW, newH), resample=Image.NEAREST if is_mask else Image.BICUBIC)
+            img = np.asarray(pil_img)
+
             if img.ndim == 2:
                 img = img[np.newaxis, ...]
             else:
@@ -108,15 +86,18 @@ class BasicDataset(Dataset):
         mask = load_image(mask_file[0])
         img = load_image(img_file[0])
 
-        assert img.size == mask.size, \
-            f'Image and mask {name} should be the same size, but are {img.size} and {mask.size}'
+        # assert img.size == mask.size, \
+        #     f'Image and mask {name} should be the same size, but are {img.size} and {mask.size}'
 
-        img = self.preprocess(self.mask_values, img, self.scale, is_mask=False)
-        mask = self.preprocess(self.mask_values, mask, self.scale, is_mask=True)
+        img = self.preprocess( img, self.scale, is_mask=False)
+        mask = self.preprocess( mask, self.scale, is_mask=True)
 
+        assert img.shape[1:] == mask.shape, \
+            f'Image and mask {name} should have the same height and width, but are {img.shape[1:]} and {mask.shape}'
+        
         return {
             'image': torch.as_tensor(img.copy()).float().contiguous(),
-            'mask': torch.as_tensor(mask.copy()).long().contiguous()
+            'mask': torch.as_tensor(mask.copy()).float().contiguous()
         }
 
 

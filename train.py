@@ -18,11 +18,12 @@ from evaluate import evaluate
 from unet import UNet
 from utils.data_loading import BasicDataset, CarvanaDataset
 from utils.dice_score import dice_loss
+from utils.regression_loss import mse_loss, mae_loss, weighted_mse_loss
 
-dir_path = Path("/media/boysun/Extreme Pro/one_image_dataset")
-dir_img = Path(dir_path / 'image/')
-dir_mask = Path(dir_path / 'mask/')
-dir_checkpoint = Path(dir_path / 'checkpoints/')
+# dir_path = Path("/media/boysun/Extreme Pro/one_image_dataset")
+# dir_img = Path(dir_path / 'image/')
+# dir_mask = Path(dir_path / 'mask/')
+# dir_checkpoint = Path(dir_path / 'checkpoints/')
 
 dir_path = Path("/media/boysun/Extreme Pro/one_image_dataset_2")
 dir_img = Path(dir_path / 'image/')
@@ -82,13 +83,16 @@ def train_model(
     # 4. Set up the optimizer, the loss, the learning rate scheduler and the loss scaling for AMP
     optimizer = optim.RMSprop(model.parameters(),
                               lr=learning_rate, weight_decay=weight_decay, momentum=momentum, foreach=True)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=5)  # goal: maximize Dice score
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=5, min_lr=1e-7)  # goal: minimize regression loss
     grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
  
  
-    pos_weight = torch.tensor([5.0]).to(device)
-    loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-    criterion = nn.CrossEntropyLoss() if model.n_classes > 1 else loss_fn
+    # pos_weight = torch.tensor([5.0]).to(device)
+    # loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    # criterion = nn.CrossEntropyLoss() if model.n_classes > 1 else loss_fn
+
+    loss_fn = weighted_mse_loss
+
     global_step = 0
 
     # 5. Begin training
@@ -105,20 +109,23 @@ def train_model(
                     'the images are loaded correctly.'
 
                 images = images.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
-                true_masks = true_masks.to(device=device, dtype=torch.long)
+                true_masks = true_masks.to(device=device, dtype=torch.float32)
 
                 with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
                     masks_pred = model(images)
                     if model.n_classes == 1:
-                        loss = criterion(masks_pred.squeeze(1), true_masks.float())
-                        loss += dice_loss(F.sigmoid(masks_pred.squeeze(1)), true_masks.float(), multiclass=False)
+                        # loss = criterion(masks_pred.squeeze(1), true_masks.float())
+                        # loss += dice_loss(F.sigmoid(masks_pred.squeeze(1)), true_masks.float(), multiclass=False)
+                        loss = loss_fn(masks_pred.squeeze(1), true_masks.float())
                     else:
-                        loss = criterion(masks_pred, true_masks)
-                        loss += dice_loss(
-                            F.softmax(masks_pred, dim=1).float(),
-                            F.one_hot(true_masks, model.n_classes).permute(0, 3, 1, 2).float(),
-                            multiclass=True
-                        )
+                        # loss = criterion(masks_pred, true_masks)
+                        # loss += dice_loss(
+                        #     F.softmax(masks_pred, dim=1).float(),
+                        #     F.one_hot(true_masks, model.n_classes).permute(0, 3, 1, 2).float(),
+                        #     multiclass=True
+                        # )
+                        print("for regression, class cannot be more than 1")
+                        sys.exit(1)
 
                 optimizer.zero_grad(set_to_none=True)
                 grad_scaler.scale(loss).backward()
@@ -151,7 +158,8 @@ def train_model(
 
                         val_score = evaluate(model, val_loader, device, amp)
                         scheduler.step(val_score)
-                        wandb_mask_pred = (F.sigmoid(masks_pred.squeeze(1)) > 0.5).float()
+                        # wandb_mask_pred = (F.sigmoid(masks_pred.squeeze(1)) > 0.5).float()
+                        wandb_mask_pred = masks_pred.squeeze(1)
                         logging.info('Validation Dice score: {}'.format(val_score))
                         try:
                             experiment.log({
@@ -160,7 +168,7 @@ def train_model(
                                 'images': wandb.Image(images[0].cpu()),
                                 'masks': {
                                     'true': wandb.Image(true_masks[0].float().cpu()),
-                                    'pred': wandb.Image(wandb_mask_pred[0].cpu())
+                                    'pred': wandb.Image(wandb_mask_pred[0].float().cpu())
                                 },
                                 'step': global_step,
                                 'epoch': epoch,
