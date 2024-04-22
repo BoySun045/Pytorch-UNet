@@ -72,14 +72,12 @@ class OutConv(nn.Module):
     def __init__(self, in_channels, out_channels):
         super(OutConv, self).__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
-        self.activation = nn.Sigmoid()  # Adding sigmoid activation for regression task
+        # self.activation = nn.Sigmoid()  # Adding sigmoid activation for regression task
+        self.activation = nn.ReLU()
 
     def forward(self, x):
         x = self.conv(x)
         # print("min before activation: ", x.min())
-        # x = self.activation(x)
-        # print("x shape: ", x.shape)
-        # print("min: ", x.min())
-        # print("max: ", x.max())
-        # print("x ", x)
+        x = self.activation(x)
+      
         return x
