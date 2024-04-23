@@ -124,6 +124,52 @@ class BasicDataset(Dataset):
 
             return img
 
+    # def preprocess(mask_values, pil_img, scale, is_mask, is_depth):
+
+    #     if is_mask:
+    #         # if it is mask, the input is directly a np array with weights value 
+    #         # do a resize, normalization and return is enough
+    #         mask = np.array(pil_img)
+    #         # resize the mask using nearest neighbor
+    #         mask = np.array(Image.fromarray(mask).resize((int(mask.shape[1] * scale), int(mask.shape[0] * scale),), resample=Image.NEAREST))
+    #         binary_mask = (mask > 0).astype(np.int64)
+    #         return binary_mask
+
+    #     else:
+    #         w, h = pil_img.size
+    #         newW, newH = int(scale * w), int(scale * h)
+    #         assert newW > 0 and newH > 0, 'Scale is too small, resized images would have no pixel'
+    #         pil_img = pil_img.resize((newW, newH), resample=Image.NEAREST if is_mask else Image.BICUBIC)
+    #         img = np.asarray(pil_img)
+
+    #         if is_depth:
+    #             pil_img = pil_img.resize((newW, newH), resample=Image.BICUBIC)
+    #             img = np.asarray(pil_img)
+    #             if img.ndim == 2:
+    #                 img = img[np.newaxis, ...]
+    #             else:
+    #                 img = img.transpose((2, 0, 1))
+
+    #             # normalize depth 
+    #             img_min = img.min()
+    #             img_max = img.max()
+    #             img = (img - img_min) / (img_max - img_min)
+
+    #             return img
+            
+    #         if not is_depth:
+    #             pil_img = pil_img.resize((newW, newH), resample=Image.BICUBIC)
+    #             img = np.asarray(pil_img)
+    #             if img.ndim == 2:
+    #                 img = img[np.newaxis, ...]
+    #             else:
+    #                 img = img.transpose((2, 0, 1))
+
+    #             if (img > 1).any():
+    #                 img = img / 255.0
+
+    #             return img
+            
     def __getitem__(self, idx):
         name = self.ids[idx]
         mask_file = list(self.mask_dir.glob(name + self.mask_suffix + '.*'))

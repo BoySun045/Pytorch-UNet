@@ -26,18 +26,25 @@ from utils.dice_score import dice_loss
 # # dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_RGB_miniset/')
 # dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_D_miniset/')
 
-dir_img = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/image/')
-dir_mask = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/mask/')
-dir_depth = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/depth_anything/')
+# dir_img = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/image/')
+# dir_mask = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/mask/')
+# dir_depth = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/depth_anything/')
 # dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_RGB_D_pred_miniset/')
 # dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_RGB_D_pred_miniset/')
-dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_D_pred_miniset/')
+# dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_D_pred_miniset/')
 
 # dir_img = Path('/cluster/project/cvg/boysun/MH3D_train_set_middle/image/')
 # dir_mask = Path('/cluster/project/cvg/boysun/MH3D_train_set_middle/mask/')
 # dir_depth = Path('/cluster/project/cvg/boysun/MH3D_train_set_middle/depth/')
 # # dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_RGBD_miniset/')
 # dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_middle/checkpoint_RGB_miniset/')
+
+# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2_mini/")
+dir_path = Path("/cluster/project/cvg/boysun/MH3D_train_set_mini/")
+dir_img = Path(dir_path / 'image/')
+dir_mask = Path(dir_path / 'mask/')
+dir_checkpoint = Path(dir_path / 'checkpoints/')
+
 
 def train_model(
         model,
@@ -79,7 +86,7 @@ def train_model(
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
     # (Initialize logging)
-    experiment = wandb.init(project='U-Net-large', resume='allow', anonymous='must')
+    experiment = wandb.init(project='U-Net-v2', resume='allow', anonymous='must')
     experiment.config.update(
         dict(epochs=epochs, batch_size=batch_size, learning_rate=learning_rate,
              val_percent=val_percent, save_checkpoint=save_checkpoint, img_scale=img_scale, amp=amp)
@@ -182,7 +189,7 @@ def train_model(
 
                 # Evaluation round
                 # division_step = (n_train // (5 * batch_size))
-                division_step = 500
+                division_step = 200
                 if division_step > 0:
                     if global_step % division_step == 0:
                         histograms = {}
@@ -216,11 +223,11 @@ def train_model(
                         except:
                             pass
                 
-        if n_train > 10000:
-            save_every_spoch = 1
-        else:
-            save_every_spoch = 5
-
+        # if n_train > 10000:
+        #     save_every_spoch = 1
+        # else:
+        #     save_every_spoch = 5
+        save_every_spoch = 20
         if save_checkpoint and epoch % save_every_spoch == 0:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
