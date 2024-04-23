@@ -65,7 +65,8 @@ class BasicDataset(Dataset):
             # resize the mask using nearest neighbor
             mask = np.array(Image.fromarray(mask).resize((int(mask.shape[1] * scale), int(mask.shape[0] * scale),), resample=Image.NEAREST))
             mask = np.clip(mask/mask_weight_global_max, 0, 1)
-            return mask
+            binary_mask = (mask > 0).astype(np.int64)
+            return mask, binary_mask
 
         else:
             w, h = pil_img.size
@@ -123,7 +124,7 @@ class BasicDataset(Dataset):
         #     f'Image and mask {name} should be the same size, but are {img.size} and {mask.size}'
 
         img = self.preprocess(img, self.scale, is_mask=False, is_depth=False)
-        mask = self.preprocess(mask, self.scale, is_mask=True, is_depth=False, mask_weight_global_max=self.weight_global_max)
+        mask, binary_mask = self.preprocess(mask, self.scale, is_mask=True, is_depth=False, mask_weight_global_max=self.weight_global_max)
 
         assert img.shape[-2:] == mask.shape[-2:], f'Image and mask {name} should be the same size, but are {img.shape} and {mask.shape}'
 
@@ -131,12 +132,14 @@ class BasicDataset(Dataset):
             return {
                 'image': torch.as_tensor(img.copy()).float().contiguous(),
                 'mask': torch.as_tensor(mask.copy()).float().contiguous(),
-                'depth': torch.as_tensor(depth.copy()).float().contiguous()
+                'depth': torch.as_tensor(depth.copy()).float().contiguous(),
+                'binary_mask': torch.as_tensor(binary_mask.copy()).long().contiguous()
             }
         else:
             return {
                 'image': torch.as_tensor(img.copy()).float().contiguous(),
-                'mask': torch.as_tensor(mask.copy()).float().contiguous()
+                'mask': torch.as_tensor(mask.copy()).float().contiguous(),
+                'binary_mask': torch.as_tensor(binary_mask.copy()).long().contiguous() 
             }
 
 

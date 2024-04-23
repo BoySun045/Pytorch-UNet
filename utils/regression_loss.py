@@ -7,20 +7,51 @@ def mse_loss(input, target):
 def mae_loss(input, target):
     return F.l1_loss(input, target)
 
-def weighted_mse_loss(input, target, increase_factor=2.0):
+# def weighted_mse_loss(input, target, increase_factor=2.0):
 
-    # Generate weight map
+#     # Generate weight map
+#     weight_map = torch.ones_like(target)
+#     weight_map[target > 0.01] *= increase_factor
+
+#     # Calculate squared error
+#     squared_error = (input - target) ** 2
+
+#     # Apply weights
+#     weighted_squared_error = squared_error * weight_map
+
+#     # Compute the mean loss
+#     loss = weighted_squared_error.mean()
+
+#     return loss
+
+def weighted_mse_loss(input, target, binary_mask, increase_factor=2.0):
+    """
+    Calculate MSE loss weighted by a binary mask, only considering errors where the mask is 1.
+    
+    Args:
+    - input (torch.Tensor): The predictions from the model.
+    - target (torch.Tensor): The ground truth values.
+    - binary_mask (torch.Tensor): A binary mask where 1 indicates relevant pixels for loss calculation.
+    - increase_factor (float): The factor by which to increase the loss at relevant pixels.
+    
+    Returns:
+    - torch.Tensor: The calculated loss.
+    """
+
+    # Apply binary mask to increase weights only where binary_mask is 1
     weight_map = torch.ones_like(target)
-    weight_map[target > 0.01] *= increase_factor
+    weight_map[binary_mask > 0] *= increase_factor
 
     # Calculate squared error
     squared_error = (input - target) ** 2
 
-    # Apply weights
-    weighted_squared_error = squared_error * weight_map
+    # Apply binary mask to consider errors only where binary_mask is 1
+    masked_squared_error = squared_error * binary_mask
 
-    # Compute the mean loss
-    loss = weighted_squared_error.mean()
+    # Apply weights
+    weighted_squared_error = masked_squared_error * weight_map
+
+    # Compute the mean loss over all pixels
+    loss = weighted_squared_error.sum() / binary_mask.sum()
 
     return loss
-

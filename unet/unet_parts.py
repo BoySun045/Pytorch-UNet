@@ -76,15 +76,21 @@ class ScaledTanh(nn.Module):
 
 
 class OutConv(nn.Module):
-    def __init__(self, in_channels, out_channels):
+    def __init__(self, in_channels, out_channels, activation=None):
         super(OutConv, self).__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
         # add a relu layer for regression
-        self.relu = nn.ReLU()
-        self.scale_tanh = ScaledTanh()
+        if activation == "relu":
+            self.activation = nn.ReLU()
+        elif activation == "tanh":
+            self.activation = ScaledTanh()
+        elif activation == "sigmoid":
+            self.activation = nn.Sigmoid()
+        elif activation is None:
+            # default to no activation
+            self.activation = nn.Identity()
 
     def forward(self, x):
         x = self.conv(x)
-        # x = self.relu(x)
-        x = self.scale_tanh(x) 
+        x = self.activation(x)
         return x

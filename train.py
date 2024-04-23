@@ -25,8 +25,8 @@ from torchvision.utils import save_image
 
 # data_folder = "/media/boysun/Extreme Pro/Actmap_v2_mini/"
 
-# dir_path = Path("/media/boysun/Extreme Pro/one_image_dataset_2")
-dir_path = Path("/media/boysun/Extreme Pro/Actmap_v2_mini/")
+dir_path = Path("/media/boysun/Extreme Pro/one_image_dataset_2")
+# dir_path = Path("/media/boysun/Extreme Pro/Actmap_v2_mini/")
 dir_img = Path(dir_path / 'image/')
 dir_mask = Path(dir_path / 'weighted_mask/')
 dir_checkpoint = Path(dir_path / 'checkpoints/')
@@ -119,14 +119,19 @@ def train_model(
     ''')
 
       # 4. Set up the optimizer, the loss, the learning rate scheduler and the loss scaling for AMP
-    optimizer = optim.RMSprop(model.parameters(),
-                              lr=learning_rate, weight_decay=weight_decay, momentum=momentum, foreach=True)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=5, min_lr=1e-7)  # goal: minimize regression loss
+        #use adam optimizer
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    # optimizer = optim.RMSprop(model.parameters(),
+    #                           lr=learning_rate, weight_decay=weight_decay, momentum=momentum, foreach=True)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=10, min_lr=1e-7)  # goal: minimize regression loss
     grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
  
-    loss_fn = weighted_mse_loss
+    loss_fn_rg = weighted_mse_loss
+    pos_weight = torch.tensor([5.0]).to(device)
+    loss_fn_cl = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
     global_step = 0
-    
+    reg_loss_weight = 5.0
     # 5. Begin training
     for epoch in range(1, epochs + 1):
         model.train()
@@ -140,6 +145,8 @@ def train_model(
                 if not use_depth and not only_depth:  # RGB images
                     images, true_masks = batch['image'], batch['mask']
 
+                    true_binary_masks = batch['binary_mask']
+                    
                     assert images.shape[1] == model.n_channels, \
                         f'Network has been defined with {model.n_channels} input channels, ' \
                         f'but loaded images have {images.shape[1]} channels. Please check that ' \
@@ -165,19 +172,24 @@ def train_model(
                     images = depth.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
                 
                 true_masks = true_masks.to(device=device, dtype=torch.float32)
+                true_binary_masks = true_binary_masks.to(device=device, dtype=torch.float32)
 
                 with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
-                    masks_pred = model(images)
+                    masks_pred, binary_pred = model(images)
                     
                     # heatmap regression
                     # masks_pred = masks_pred.squeeze(1)
-                    loss = loss_fn(masks_pred.squeeze(1), true_masks.float())
+                    # loss = loss_fn(masks_pred.squeeze(1), true_masks.float())
+                    reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float(), true_binary_masks.float())
 
                     # binary classification
                     # mask prediction is a probability map after sigmoid, so we need to convert it to binary mask
                     # loss = criterion(masks_pred.squeeze(1), true_masks.float())
                     # loss += dice_loss(F.sigmoid(masks_pred.squeeze(1)), true_masks.float(), multiclass=False)
-                    
+                    class_loss = loss_fn_cl(binary_pred.squeeze(1), true_binary_masks.float())
+                    class_loss += dice_loss(binary_pred.squeeze(1), true_binary_masks.float(), multiclass=False)
+                    loss = reg_loss_weight * reg_loss + class_loss
+
                 optimizer.zero_grad(set_to_none=True)
                 grad_scaler.scale(loss).backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clipping)
@@ -188,7 +200,9 @@ def train_model(
                 global_step += 1
                 epoch_loss += loss.item()
                 experiment.log({
-                    'train loss': loss.item(),
+                    'train loss total': loss.item(),
+                    'train loss regression': reg_loss.item(),
+                    'train loss classification': class_loss.item(),
                     'step': global_step,
                     'epoch': epoch
                 })
@@ -210,8 +224,10 @@ def train_model(
                         val_loss = evaluate(model, val_loader, device, amp, use_depth=use_depth, only_depth=only_depth)
                         scheduler.step(val_loss)
 
-                        wandb_mask_pred = masks_pred.squeeze(1)
-
+                        # wandb_mask_pred = masks_pred.squeeze(1)
+                        # combine the binary mask and regression mask
+                        binary_mask = binary_pred.squeeze(1) > 0.5
+                        wandb_mask_pred = masks_pred.squeeze(1) * binary_mask
                         logging.info('validation avg loss: {}'.format(val_loss))
                         try:
                                         
@@ -221,7 +237,9 @@ def train_model(
                                 'images': wandb.Image(images[0].cpu()),
                                 'masks': {
                                     'true': wandb.Image(true_masks[0].float().cpu()),
-                                    'pred': wandb.Image(wandb_mask_pred[0].float().cpu())
+                                    'true_binary': wandb.Image(true_binary_masks[0].float().cpu()),
+                                    'pred': wandb.Image(wandb_mask_pred[0].float().cpu()),
+                                    'pred_binary': wandb.Image(binary_mask[0].float().cpu())
                                 },
                                 'step': global_step,
                                 'epoch': epoch,
@@ -230,7 +248,7 @@ def train_model(
                         except:
                             pass
 
-        if save_checkpoint and epoch % 200 == 0:
+        if save_checkpoint and epoch % 20 == 0:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
             state_dict['mask_values'] = dataset.mask_values
