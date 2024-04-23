@@ -19,19 +19,19 @@ from unet import UNet
 from utils.data_loading import BasicDataset, CarvanaDataset
 from utils.dice_score import dice_loss
 
-dir_img = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/image/')
-dir_mask = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/mask/')
-dir_depth = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/depth/')
-# dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_RGBD_miniset/')
-# dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_RGB_miniset/')
-dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_D_miniset/')
-
 # dir_img = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/image/')
 # dir_mask = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/mask/')
-# dir_depth = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/depth_anything/')
-# # dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_RGB_D_pred_miniset/')
-# # dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_RGB_D_pred_miniset/')
-# dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_D_pred_miniset/')
+# dir_depth = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/depth/')
+# # dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_RGBD_miniset/')
+# # dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_RGB_miniset/')
+# dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_D_miniset/')
+
+dir_img = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/image/')
+dir_mask = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/mask/')
+dir_depth = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/depth_anything/')
+# dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_RGB_D_pred_miniset/')
+# dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_RGB_D_pred_miniset/')
+dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_D_pred_miniset/')
 
 # dir_img = Path('/cluster/project/cvg/boysun/MH3D_train_set_middle/image/')
 # dir_mask = Path('/cluster/project/cvg/boysun/MH3D_train_set_middle/mask/')
