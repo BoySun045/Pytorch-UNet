@@ -67,11 +67,30 @@ class Up(nn.Module):
         x = torch.cat([x2, x1], dim=1)
         return self.conv(x)
 
-
-class OutConv(nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super(OutConv, self).__init__()
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+class ScaledTanh(nn.Module):
+    def __init__(self):
+        super(ScaledTanh, self).__init__()
 
     def forward(self, x):
-        return self.conv(x)
+        return 0.5 * (torch.tanh(x) + 1.0)
+
+
+class OutConv(nn.Module):
+    def __init__(self, in_channels, out_channels, activation=None):
+        super(OutConv, self).__init__()
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+        # add a relu layer for regression
+        if activation == "relu":
+            self.activation = nn.ReLU()
+        elif activation == "tanh":
+            self.activation = ScaledTanh()
+        elif activation == "sigmoid":
+            self.activation = nn.Sigmoid()
+        elif activation is None:
+            # default to no activation
+            self.activation = nn.Identity()
+
+    def forward(self, x):
+        x = self.conv(x)
+        x = self.activation(x)
+        return x

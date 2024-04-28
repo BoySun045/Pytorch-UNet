@@ -18,6 +18,7 @@ from evaluate import evaluate
 from unet import UNet
 from utils.data_loading import BasicDataset, CarvanaDataset
 from utils.dice_score import dice_loss
+from utils.regression_loss import mse_loss, weighted_mse_loss, mae_loss
 from torchvision.utils import save_image
 
 # dir_img = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/image/')
@@ -100,7 +101,7 @@ def train_model(
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
     # (Initialize logging)
-    experiment = wandb.init(project='U-Net-large', resume='allow', anonymous='must')
+    experiment = wandb.init(project='U-Net-debug', resume='allow', anonymous='must')
     experiment.config.update(
         dict(epochs=epochs, batch_size=batch_size, learning_rate=learning_rate,
              val_percent=val_percent, save_checkpoint=save_checkpoint, img_scale=img_scale, amp=amp)
@@ -123,15 +124,15 @@ def train_model(
                               lr=learning_rate, weight_decay=weight_decay, momentum=momentum)
     #use adam optimizer
     # optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=5)  # goal: maximize Dice score
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=5)  # goal: maximize Dice score
     grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
 
+    loss_fn_rg = weighted_mse_loss
     pos_weight = torch.tensor([1.0]).to(device)
-    loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    loss_fn_cl = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
-    criterion = nn.CrossEntropyLoss() if model.n_classes > 1 else loss_fn
-    global_step = 0
-
+    global_step = 0 
+    reg_loss_weight = 2.0       
     # 5. Begin training
     for epoch in range(1, epochs + 1):
         model.train()
@@ -144,6 +145,7 @@ def train_model(
 
                 if not use_depth:
                     images, true_masks = batch['image'], batch['mask']
+                    true_binary_masks = batch['binary_mask']
 
                     assert images.shape[1] == model.n_channels, \
                         f'Network has been defined with {model.n_channels} input channels, ' \
@@ -164,35 +166,20 @@ def train_model(
                     images = torch.cat([images, depth], dim=1)
 
                 true_masks = true_masks.to(device=device, dtype=torch.long)
+                true_binary_masks = true_binary_masks.to(device=device, dtype=torch.float32)
 
                 with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
-                    masks_pred = model(images)
+                    masks_pred, binary_pred = model(images)
                     if model.n_classes == 1:
-                        #since this is a binary classification problem, print out the correct predicted labels ratio,
-                        # calculate the number of correct predicted labels
-                        # # and calculate the accuracy
-                        # print(f'number of pixels in the mask: {true_masks.numel()}')
-                        # print(f'number of pixels in the predicted mask: {masks_pred.numel()}')
-                        # print(f"number of positive pixels in the mask: {true_masks.sum()}")
-                        # print(f"number of positive pixels in the predicted mask: {masks_pred.sum()}")
-                        # print(f"number of negative pixels in the mask: {true_masks.numel() - true_masks.sum()}")
-                        # print(f"number of negative pixels in the predicted mask: {masks_pred.numel() - masks_pred.sum()}")
-                        # print(f"number of true positive pixels: {(true_masks * masks_pred).sum()}")
-                        # print(f"number of false positive pixels: {(true_masks * (1 - masks_pred)).sum()}")
-                        # print(f"number of false negative pixels: {((1 - true_masks) * masks_pred).sum()}")
-                        # print(f"number of true negative pixels: {((1 - true_masks) * (1 - masks_pred)).sum()}")
 
-                        loss = criterion(masks_pred.squeeze(1), true_masks.float())
+                        reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float(), true_binary_masks.float())
                         # print(f'Loss: {loss}')
-                        loss += dice_loss(F.sigmoid(masks_pred.squeeze(1)), true_masks.float(), multiclass=False)
-                        # print(f'Loss after dice loss: {loss}')
-                    else:
-                        loss = criterion(masks_pred, true_masks)
-                        loss += dice_loss(
-                            F.softmax(masks_pred, dim=1).float(),
-                            F.one_hot(true_masks, model.n_classes).permute(0, 3, 1, 2).float(),
-                            multiclass=True
-                        )
+                        class_loss = loss_fn_cl(binary_pred.squeeze(1), true_binary_masks.float())
+                        class_loss += dice_loss(binary_pred.squeeze(1), true_binary_masks.float(), multiclass=False)
+
+                        reg_loss = reg_loss_weight * reg_loss
+                        loss = reg_loss + class_loss
+
 
                 optimizer.zero_grad(set_to_none=True)
                 grad_scaler.scale(loss).backward()
@@ -204,15 +191,17 @@ def train_model(
                 global_step += 1
                 epoch_loss += loss.item()
                 experiment.log({
-                    'train loss': loss.item(),
-                    'step': global_step,
-                    'epoch': epoch
-                })
+                        'train loss total': loss.item(),
+                        'train loss regression': reg_loss.item(),
+                        'train loss classification': class_loss.item(),
+                        'step': global_step,
+                        'epoch': epoch
+                    })
                 pbar.set_postfix(**{'loss (batch)': loss.item()})
 
                 # Evaluation round
                 division_step = (n_train // (5 * batch_size))
-                division_step = 200
+                division_step = 100
                 if division_step > 0:
                     if global_step % division_step == 0:
                         histograms = {}
@@ -226,18 +215,21 @@ def train_model(
                         val_score = evaluate(model, val_loader, device, amp, use_depth=use_depth)
                         scheduler.step(val_score)
 
+                        binary_mask = binary_pred.squeeze(1) > 0.5
+                        wandb_mask_pred = masks_pred.squeeze(1) * binary_mask
+
                         logging.info('Validation Dice score: {}'.format(val_score))
                         try:
-                            #convert mask_pred to a binary mask for wandb logging
-                            wandb_mask_pred = (F.sigmoid(masks_pred.squeeze(1)) > 0.5).float()
-                    
+                                        
                             experiment.log({
                                 'learning rate': optimizer.param_groups[0]['lr'],
-                                'validation Dice': val_score,
+                                'validation avg score': val_score,
                                 'images': wandb.Image(images[0].cpu()),
                                 'masks': {
                                     'true': wandb.Image(true_masks[0].float().cpu()),
-                                    'pred': wandb.Image(wandb_mask_pred[0].cpu())
+                                    'true_binary': wandb.Image(true_binary_masks[0].float().cpu()),
+                                    'pred': wandb.Image(wandb_mask_pred[0].float().cpu()),
+                                    'pred_binary': wandb.Image(binary_mask[0].float().cpu())
                                 },
                                 'step': global_step,
                                 'epoch': epoch,
@@ -246,7 +238,7 @@ def train_model(
                         except:
                             pass
 
-        if save_checkpoint and epoch % 10 == 0:
+        if save_checkpoint and epoch % 20 == 0:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
             state_dict['mask_values'] = dataset.mask_values
