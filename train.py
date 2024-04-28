@@ -18,41 +18,19 @@ from evaluate import evaluate
 from unet import UNet
 from utils.data_loading import BasicDataset, CarvanaDataset
 from utils.dice_score import dice_loss
-<<<<<<< Updated upstream
+from torchvision.utils import save_image
 
 # dir_img = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/image/')
 # dir_mask = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/mask/')
 # dir_depth = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/depth/')
-# # dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_RGBD_miniset/')
-# # dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_RGB_miniset/')
-# dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_D_miniset/')
+# dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/')
+# dir_debug = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/debug/')
 
-# dir_img = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/image/')
-# dir_mask = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/mask/')
-# dir_depth = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/depth_anything/')
-# dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_RGB_D_pred_miniset/')
-# dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_RGB_D_pred_miniset/')
-# dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_D_pred_miniset/')
-
-# dir_img = Path('/cluster/project/cvg/boysun/MH3D_train_set_middle/image/')
-# dir_mask = Path('/cluster/project/cvg/boysun/MH3D_train_set_middle/mask/')
-# dir_depth = Path('/cluster/project/cvg/boysun/MH3D_train_set_middle/depth/')
-# # dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/checkpoint_RGBD_miniset/')
-# dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_middle/checkpoint_RGB_miniset/')
-
-# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2_mini/")
-dir_path = Path("/cluster/project/cvg/boysun/MH3D_train_set_mini/")
+dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2_mini")
 dir_img = Path(dir_path / 'image/')
-dir_mask = Path(dir_path / 'mask/')
+dir_mask = Path(dir_path / 'weighted_mask/')
 dir_checkpoint = Path(dir_path / 'checkpoints/')
-=======
-from torchvision.utils import save_image
-
-dir_img = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/image/')
-dir_mask = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/mask/')
-dir_depth = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/depth/')
-dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/')
-dir_debug = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/debug/')
+dir_debug = Path(dir_path / 'debug/')
 
 # make debug directory
 dir_debug.mkdir(parents=True, exist_ok=True)
@@ -81,7 +59,6 @@ def save_debug_images(batch, epoch, batch_idx, prefix='train', num_images=5):
         if depths is not None:
             depth_path = f'{dir_debug}/{prefix}_epoch{epoch}_batch{batch_idx}_depth{i}.png'
             save_image(depths[i], depth_path)
->>>>>>> Stashed changes
 
 
 def train_model(
@@ -97,8 +74,7 @@ def train_model(
         weight_decay: float = 1e-8,
         momentum: float = 0.999,
         gradient_clipping: float = 1.0,
-        use_depth: bool = False,
-        only_depth: bool = False
+        use_depth: bool = False
 ):
     # 1. Create dataset
     if use_depth:
@@ -119,20 +95,12 @@ def train_model(
     print(f"Train size: {n_train}, Validation size: {n_val}")
 
     # 3. Create data loaders
-<<<<<<< Updated upstream
-    loader_args = dict(batch_size=batch_size, num_workers=16, pin_memory=True)
-=======
     loader_args = dict(batch_size=batch_size, num_workers=8, pin_memory=True)
->>>>>>> Stashed changes
     train_loader = DataLoader(train_set, shuffle=True, **loader_args)
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
     # (Initialize logging)
-<<<<<<< Updated upstream
-    experiment = wandb.init(project='U-Net-v2', resume='allow', anonymous='must')
-=======
     experiment = wandb.init(project='U-Net-large', resume='allow', anonymous='must')
->>>>>>> Stashed changes
     experiment.config.update(
         dict(epochs=epochs, batch_size=batch_size, learning_rate=learning_rate,
              val_percent=val_percent, save_checkpoint=save_checkpoint, img_scale=img_scale, amp=amp)
@@ -170,8 +138,11 @@ def train_model(
         epoch_loss = 0
         with tqdm(total=n_train, desc=f'Epoch {epoch}/{epochs}', unit='img') as pbar:
             for batch_idx, batch in enumerate(train_loader):
+                # Save debug images for the first batch of each epoch
+                # if batch_idx == 0:
+                #     save_debug_images(batch, epoch, batch_idx, prefix='train')
 
-                if not use_depth and not only_depth:  # RGB images
+                if not use_depth:
                     images, true_masks = batch['image'], batch['mask']
 
                     assert images.shape[1] == model.n_channels, \
@@ -180,37 +151,23 @@ def train_model(
                         'the images are loaded correctly.'
 
                     images = images.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
-                
-                elif use_depth and not only_depth:  # RGB-D images
+                else: 
                     images, true_masks, depth = batch['image'], batch['mask'], batch['depth']
-                    print("image channel plus depth channel: ", images.shape[1] + depth.shape[1])
+
                     assert images.shape[1] + depth.shape[1] == model.n_channels, \
                         f'Network has been defined with {model.n_channels} input channels, ' \
-                        f'but loaded images have {images.shape[1] + depth.shape[1]}  channels. Please check that ' \
+                        f'but loaded images have {images.shape[1]} channels. Please check that ' \
                         'the images are loaded correctly.'
+
                     images = images.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
                     depth = depth.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
                     images = torch.cat([images, depth], dim=1)
-                
-                elif only_depth: # Depth images
-                    assert batch['depth'].shape[1] == model.n_channels, \
-                        f'Network has been defined with {model.n_channels} input channels, ' \
-                        f'but loaded images have {batch["depth"].shape[1]} channels. Please check that ' \
-                        'the images are loaded correctly.'
-                        
-                    true_masks, depth = batch['mask'], batch['depth']
-                    images = depth.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
-                
+
                 true_masks = true_masks.to(device=device, dtype=torch.long)
 
                 with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
                     masks_pred = model(images)
                     if model.n_classes == 1:
-<<<<<<< Updated upstream
-                        loss = criterion(masks_pred.squeeze(1), true_masks.float())
-                        loss += dice_loss(F.sigmoid(masks_pred.squeeze(1)), true_masks.float(), multiclass=False)
-        
-=======
                         #since this is a binary classification problem, print out the correct predicted labels ratio,
                         # calculate the number of correct predicted labels
                         # # and calculate the accuracy
@@ -229,7 +186,6 @@ def train_model(
                         # print(f'Loss: {loss}')
                         loss += dice_loss(F.sigmoid(masks_pred.squeeze(1)), true_masks.float(), multiclass=False)
                         # print(f'Loss after dice loss: {loss}')
->>>>>>> Stashed changes
                     else:
                         loss = criterion(masks_pred, true_masks)
                         loss += dice_loss(
@@ -255,11 +211,7 @@ def train_model(
                 pbar.set_postfix(**{'loss (batch)': loss.item()})
 
                 # Evaluation round
-<<<<<<< Updated upstream
-                # division_step = (n_train // (5 * batch_size))
-=======
                 division_step = (n_train // (5 * batch_size))
->>>>>>> Stashed changes
                 division_step = 200
                 if division_step > 0:
                     if global_step % division_step == 0:
@@ -271,7 +223,7 @@ def train_model(
                             if not (torch.isinf(value.grad) | torch.isnan(value.grad)).any():
                                 histograms['Gradients/' + tag] = wandb.Histogram(value.grad.data.cpu())
 
-                        val_score = evaluate(model, val_loader, device, amp, use_depth=use_depth, only_depth=only_depth)
+                        val_score = evaluate(model, val_loader, device, amp, use_depth=use_depth)
                         scheduler.step(val_score)
 
                         logging.info('Validation Dice score: {}'.format(val_score))
@@ -293,13 +245,8 @@ def train_model(
                             })
                         except:
                             pass
-                
-        # if n_train > 10000:
-        #     save_every_spoch = 1
-        # else:
-        #     save_every_spoch = 5
-        save_every_spoch = 20
-        if save_checkpoint and epoch % save_every_spoch == 0:
+
+        if save_checkpoint and epoch % 10 == 0:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
             state_dict['mask_values'] = dataset.mask_values
@@ -322,7 +269,6 @@ def get_args():
     parser.add_argument('--classes', '-c', type=int, default=1, help='Number of classes')
 
     parser.add_argument('--use_depth', action='store_true', default=False, help='Use depth image')
-    parser.add_argument('--use_only_depth', action='store_true', default=False, help='Use only depth image')
 
     return parser.parse_args()
 
@@ -337,21 +283,11 @@ if __name__ == '__main__':
     # Change here to adapt to your data
     # n_channels=3 for RGB images
     # n_channels=4 for RGB-D images
-    # n_channels=1 for depth images
     # n_classes is the number of probabilities you want to get per pixel
-
-    # first, check when use_only_depth is enabled, use_depth should also be enabled
-    if args.use_only_depth:
-        args.use_depth = True
-        print('use_depth is forced to be enabled because use_only_depth is enabled')
-
-    if args.use_depth and not args.use_only_depth:
-        model = UNet(n_channels=4, n_classes=args.classes, bilinear=args.bilinear) # RGB-D images
-    elif args.use_only_depth:
-        model = UNet(n_channels=1, n_classes=args.classes, bilinear=args.bilinear) # Depth images
+    if args.use_depth:
+        model = UNet(n_channels=4, n_classes=args.classes, bilinear=args.bilinear)
     else:
-        model = UNet(n_channels=3, n_classes=args.classes, bilinear=args.bilinear) # RGB images
-
+        model = UNet(n_channels=3, n_classes=args.classes, bilinear=args.bilinear)
     model = model.to(memory_format=torch.channels_last)
 
     logging.info(f'Network:\n'
@@ -376,8 +312,7 @@ if __name__ == '__main__':
             img_scale=args.scale,
             val_percent=args.val / 100,
             amp=args.amp,
-            use_depth=args.use_depth,
-            only_depth=args.use_only_depth
+            use_depth=args.use_depth
         )
     except torch.cuda.OutOfMemoryError:
         logging.error('Detected OutOfMemoryError! '
@@ -394,6 +329,5 @@ if __name__ == '__main__':
             img_scale=args.scale,
             val_percent=args.val / 100,
             amp=args.amp,
-            use_depth=args.use_depth,
-            only_depth=args.use_only_depth
+            use_depth=args.use_depth
         )
