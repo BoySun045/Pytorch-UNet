@@ -18,6 +18,7 @@ from evaluate import evaluate
 from unet import UNet
 from utils.data_loading import BasicDataset, CarvanaDataset
 from utils.dice_score import dice_loss
+<<<<<<< Updated upstream
 
 # dir_img = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/image/')
 # dir_mask = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/mask/')
@@ -44,6 +45,43 @@ dir_path = Path("/cluster/project/cvg/boysun/MH3D_train_set_mini/")
 dir_img = Path(dir_path / 'image/')
 dir_mask = Path(dir_path / 'mask/')
 dir_checkpoint = Path(dir_path / 'checkpoints/')
+=======
+from torchvision.utils import save_image
+
+dir_img = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/image/')
+dir_mask = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/mask/')
+dir_depth = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/depth/')
+dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/')
+dir_debug = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/debug/')
+
+# make debug directory
+dir_debug.mkdir(parents=True, exist_ok=True)
+
+def save_debug_images(batch, epoch, batch_idx, prefix='train', num_images=5):
+    """
+    Saves a set of images, masks, and optionally depth maps from a batch for debugging.
+
+    Args:
+        batch (dict): The current batch of data containing 'image', 'mask', and optionally 'depth'.
+        epoch (int): Current epoch number for naming.
+        batch_idx (int): Current batch index for naming.
+        prefix (str): Prefix for the filenames to indicate training or validation phase.
+        num_images (int): Number of images to save from the batch.
+    """
+    images, masks = batch['image'][:num_images], batch['mask'][:num_images]
+    depths = batch['depth'][:num_images] if 'depth' in batch else None
+
+    for i in range(num_images):
+        # save images and masks under the dir_debug directory
+        img_path = f'{dir_debug}/{prefix}_epoch{epoch}_batch{batch_idx}_img{i}.jpg'
+        mask_path = f'{dir_debug}/{prefix}_epoch{epoch}_batch{batch_idx}_mask{i}.jpg'
+        save_image(images[i], img_path)
+        save_image(masks[i], mask_path)
+
+        if depths is not None:
+            depth_path = f'{dir_debug}/{prefix}_epoch{epoch}_batch{batch_idx}_depth{i}.png'
+            save_image(depths[i], depth_path)
+>>>>>>> Stashed changes
 
 
 def train_model(
@@ -81,12 +119,20 @@ def train_model(
     print(f"Train size: {n_train}, Validation size: {n_val}")
 
     # 3. Create data loaders
+<<<<<<< Updated upstream
     loader_args = dict(batch_size=batch_size, num_workers=16, pin_memory=True)
+=======
+    loader_args = dict(batch_size=batch_size, num_workers=8, pin_memory=True)
+>>>>>>> Stashed changes
     train_loader = DataLoader(train_set, shuffle=True, **loader_args)
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
     # (Initialize logging)
+<<<<<<< Updated upstream
     experiment = wandb.init(project='U-Net-v2', resume='allow', anonymous='must')
+=======
+    experiment = wandb.init(project='U-Net-large', resume='allow', anonymous='must')
+>>>>>>> Stashed changes
     experiment.config.update(
         dict(epochs=epochs, batch_size=batch_size, learning_rate=learning_rate,
              val_percent=val_percent, save_checkpoint=save_checkpoint, img_scale=img_scale, amp=amp)
@@ -105,14 +151,14 @@ def train_model(
     ''')
 
     # 4. Set up the optimizer, the loss, the learning rate scheduler and the loss scaling for AMP
-    # optimizer = optim.RMSprop(model.parameters(),
-    #                           lr=learning_rate, weight_decay=weight_decay, momentum=momentum, foreach=True)
+    optimizer = optim.RMSprop(model.parameters(),
+                              lr=learning_rate, weight_decay=weight_decay, momentum=momentum)
     #use adam optimizer
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    # optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=5)  # goal: maximize Dice score
     grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
 
-    pos_weight = torch.tensor([2.0]).to(device)
+    pos_weight = torch.tensor([1.0]).to(device)
     loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
     criterion = nn.CrossEntropyLoss() if model.n_classes > 1 else loss_fn
@@ -160,9 +206,30 @@ def train_model(
                 with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
                     masks_pred = model(images)
                     if model.n_classes == 1:
+<<<<<<< Updated upstream
                         loss = criterion(masks_pred.squeeze(1), true_masks.float())
                         loss += dice_loss(F.sigmoid(masks_pred.squeeze(1)), true_masks.float(), multiclass=False)
         
+=======
+                        #since this is a binary classification problem, print out the correct predicted labels ratio,
+                        # calculate the number of correct predicted labels
+                        # # and calculate the accuracy
+                        # print(f'number of pixels in the mask: {true_masks.numel()}')
+                        # print(f'number of pixels in the predicted mask: {masks_pred.numel()}')
+                        # print(f"number of positive pixels in the mask: {true_masks.sum()}")
+                        # print(f"number of positive pixels in the predicted mask: {masks_pred.sum()}")
+                        # print(f"number of negative pixels in the mask: {true_masks.numel() - true_masks.sum()}")
+                        # print(f"number of negative pixels in the predicted mask: {masks_pred.numel() - masks_pred.sum()}")
+                        # print(f"number of true positive pixels: {(true_masks * masks_pred).sum()}")
+                        # print(f"number of false positive pixels: {(true_masks * (1 - masks_pred)).sum()}")
+                        # print(f"number of false negative pixels: {((1 - true_masks) * masks_pred).sum()}")
+                        # print(f"number of true negative pixels: {((1 - true_masks) * (1 - masks_pred)).sum()}")
+
+                        loss = criterion(masks_pred.squeeze(1), true_masks.float())
+                        # print(f'Loss: {loss}')
+                        loss += dice_loss(F.sigmoid(masks_pred.squeeze(1)), true_masks.float(), multiclass=False)
+                        # print(f'Loss after dice loss: {loss}')
+>>>>>>> Stashed changes
                     else:
                         loss = criterion(masks_pred, true_masks)
                         loss += dice_loss(
@@ -188,7 +255,11 @@ def train_model(
                 pbar.set_postfix(**{'loss (batch)': loss.item()})
 
                 # Evaluation round
+<<<<<<< Updated upstream
                 # division_step = (n_train // (5 * batch_size))
+=======
+                division_step = (n_train // (5 * batch_size))
+>>>>>>> Stashed changes
                 division_step = 200
                 if division_step > 0:
                     if global_step % division_step == 0:
@@ -240,7 +311,7 @@ def get_args():
     parser = argparse.ArgumentParser(description='Train the UNet on images and target masks')
     parser.add_argument('--epochs', '-e', metavar='E', type=int, default=500, help='Number of epochs')
     parser.add_argument('--batch-size', '-b', dest='batch_size', metavar='B', type=int, default=1, help='Batch size')
-    parser.add_argument('--learning-rate', '-l', metavar='LR', type=float, default=2e-6,
+    parser.add_argument('--learning-rate', '-l', metavar='LR', type=float, default=1e-6,
                         help='Learning rate', dest='lr')
     parser.add_argument('--load', '-f', type=str, default=False, help='Load model from a .pth file')
     parser.add_argument('--scale', '-s', type=float, default=0.5, help='Downscaling factor of the images')
