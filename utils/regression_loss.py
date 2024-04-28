@@ -41,7 +41,14 @@ def weighted_mse_loss(input, target, binary_mask, increase_factor=2.0):
     # Apply binary mask to increase weights only where binary_mask is 1
     weight_map = torch.ones_like(target)
     weight_map[binary_mask > 0] *= increase_factor
+    # for the case where the mask is 0, we don't want to pass gradient, so we set the weight to 0
+    weight_map[binary_mask == 0] = 0
 
+    # check if the number of 0 values and 1 values in the binary mask sum up to the total number of pixels
+    assert binary_mask.sum() + (binary_mask == 0).sum() == binary_mask.numel()
+    print("number of 1 values in the binary mask: ", binary_mask.sum())
+    print("number of 0 values in the binary mask: ", (binary_mask == 0).sum())
+    
     # Calculate squared error
     squared_error = (input - target) ** 2
 

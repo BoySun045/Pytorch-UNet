@@ -25,8 +25,8 @@ from torchvision.utils import save_image
 
 # data_folder = "/media/boysun/Extreme Pro/Actmap_v2_mini/"
 
-dir_path = Path("/media/boysun/Extreme Pro/one_image_dataset_2")
-# dir_path = Path("/media/boysun/Extreme Pro/Actmap_v2_mini/")
+# dir_path = Path("/media/boysun/Extreme Pro/one_image_dataset_2")
+dir_path = Path("/media/boysun/Extreme Pro/Actmap_v2_mini/")
 dir_img = Path(dir_path / 'image/')
 dir_mask = Path(dir_path / 'weighted_mask/')
 dir_checkpoint = Path(dir_path / 'checkpoints/')
@@ -123,15 +123,15 @@ def train_model(
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     # optimizer = optim.RMSprop(model.parameters(),
     #                           lr=learning_rate, weight_decay=weight_decay, momentum=momentum, foreach=True)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=10, min_lr=1e-7)  # goal: minimize regression loss
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=10, min_lr=2e-7)  # goal: minimize regression loss
     grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
  
     loss_fn_rg = weighted_mse_loss
-    pos_weight = torch.tensor([5.0]).to(device)
+    pos_weight = torch.tensor([2.0]).to(device)
     loss_fn_cl = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
     global_step = 0
-    reg_loss_weight = 5.0
+    reg_loss_weight = 2.0
     # 5. Begin training
     for epoch in range(1, epochs + 1):
         model.train()
@@ -188,7 +188,8 @@ def train_model(
                     # loss += dice_loss(F.sigmoid(masks_pred.squeeze(1)), true_masks.float(), multiclass=False)
                     class_loss = loss_fn_cl(binary_pred.squeeze(1), true_binary_masks.float())
                     class_loss += dice_loss(binary_pred.squeeze(1), true_binary_masks.float(), multiclass=False)
-                    loss = reg_loss_weight * reg_loss + class_loss
+                    reg_loss = reg_loss_weight * reg_loss
+                    loss = reg_loss + class_loss
 
                 optimizer.zero_grad(set_to_none=True)
                 grad_scaler.scale(loss).backward()
@@ -251,7 +252,7 @@ def train_model(
         if save_checkpoint and epoch % 20 == 0:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
-            state_dict['mask_values'] = dataset.mask_values
+            # state_dict['mask_values'] = dataset.mask_values
             torch.save(state_dict, str(dir_checkpoint / 'checkpoint_epoch{}.pth'.format(epoch)))
             logging.info(f'Checkpoint {epoch} saved!')
 
