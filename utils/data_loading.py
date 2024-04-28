@@ -36,20 +36,6 @@ def load_image(filename):
     else:
         return Image.open(filename)
 
-def unique_mask_values(idx, mask_dir, mask_suffix):
-    # print("mask_dir: ", mask_dir)
-    # print("mask_suffix: ", mask_suffix)
-    # print("idx: ", idx)
-    mask_file = list(mask_dir.glob(idx + mask_suffix + '.*'))[0]
-    # print("mask_file: ", mask_file)
-    mask = np.asarray(load_image(mask_file))
-    if mask.ndim == 2:
-        return np.unique(mask)
-    elif mask.ndim == 3:
-        mask = mask.reshape(-1, mask.shape[-1])
-        return np.unique(mask, axis=0)
-    else:
-        raise ValueError(f'Loaded masks should have 2 or 3 dimensions, found {mask.ndim}')
 
 
 class BasicDataset(Dataset):
@@ -142,14 +128,12 @@ class BasicDataset(Dataset):
             # if it is mask, the input is directly a np array with weights value 
             # do a resize, normalization and return is enough
             mask = np.array(pil_img)
-            global_mask_max = 3000
+            mask_weight_global_max = 2000
             # resize the mask using nearest neighbor
             mask = np.array(Image.fromarray(mask).resize((int(mask.shape[1] * scale), int(mask.shape[0] * scale),), resample=Image.NEAREST))
-            mask = np.clip(mask/global_mask_max, 0, 1)
-            # convert mask into a binary mask
-            mask[mask > 0.001] = 1
-            mask[mask <= 0.001] = 0
-            return mask
+            mask = np.clip(mask/mask_weight_global_max, 0, 1)
+            binary_mask = (mask > 0.0001).astype(np.int64)
+            return mask, binary_mask
 
         else:
             w, h = pil_img.size
@@ -184,49 +168,16 @@ class BasicDataset(Dataset):
         #     f'Image and mask {name} should be the same size, but are {img.size} and {mask.size}'
 
         img = self.preprocess( img, self.scale, is_mask=False)
-        mask = self.preprocess( mask, self.scale, is_mask=True)
+        mask, binary_mask = self.preprocess(mask, self.scale, is_mask=True)
 
         assert img.shape[1:] == mask.shape, \
             f'Image and mask {name} should have the same height and width, but are {img.shape[1:]} and {mask.shape}'
         
         return {
             'image': torch.as_tensor(img.copy()).float().contiguous(),
-            'mask': torch.as_tensor(mask.copy()).float().contiguous()
+            'mask': torch.as_tensor(mask.copy()).float().contiguous(),
+            'binary_mask': torch.as_tensor(binary_mask.copy()).long().contiguous()
         }
-
-    # def __getitem__(self, idx):
-    #     name = self.ids[idx]
-    #     mask_file = list(self.mask_dir.glob(name + self.mask_suffix + '.*'))
-    #     img_file = list(self.images_dir.glob(name + '.*'))
-
-    #     if self.depth_dir is not None:
-    #         depth_file = list(self.depth_dir.glob(name + '.*'))
-    #         assert len(depth_file) == 1, f'Either no depth image or multiple depth images found for the ID {name}: {depth_file}'
-    #         depth = load_image(depth_file[0])
-    #         depth = self.preprocess(self.mask_values, depth, self.scale, is_mask=False, is_depth=True)
-
-    #     assert len(img_file) == 1, f'Either no image or multiple images found for the ID {name}: {img_file}'
-    #     assert len(mask_file) == 1, f'Either no mask or multiple masks found for the ID {name}: {mask_file}'
-    #     mask = load_image(mask_file[0])
-    #     img = load_image(img_file[0])
-
-    #     assert img.size == mask.size, \
-    #         f'Image and mask {name} should be the same size, but are {img.size} and {mask.size}'
-
-    #     img = self.preprocess(self.mask_values, img, self.scale, is_mask=False, is_depth=False)
-    #     mask = self.preprocess(self.mask_values, mask, self.scale, is_mask=True, is_depth=False)
-
-    #     if self.depth_dir is not None:
-    #         return {
-    #             'image': torch.as_tensor(img.copy()).float().contiguous(),
-    #             'mask': torch.as_tensor(mask.copy()).long().contiguous(),
-    #             'depth': torch.as_tensor(depth.copy()).float().contiguous()
-    #         }
-    #     else:
-    #         return {
-    #             'image': torch.as_tensor(img.copy()).float().contiguous(),
-    #             'mask': torch.as_tensor(mask.copy()).long().contiguous()
-    #         }
 
 
 class CarvanaDataset(BasicDataset):

@@ -26,7 +26,8 @@ class UNet(nn.Module):
         self.outc_reg = OutConv(64, n_classes, activation="tanh")
 
         # Paths for binary classification
-        self.outc_bin = OutConv(64, n_classes, activation="sigmoid")
+        # self.outc_bin = OutConv(64, n_classes, activation="sigmoid")
+        self.outc_bin = OutConv(64, n_classes, activation=None)
         
     def forward(self, x):
         x1 = self.inc(x)

@@ -124,15 +124,18 @@ def train_model(
                               lr=learning_rate, weight_decay=weight_decay, momentum=momentum)
     #use adam optimizer
     # optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=5)  # goal: maximize Dice score
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=5)  # goal: maximize score
     grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
 
     loss_fn_rg = weighted_mse_loss
-    pos_weight = torch.tensor([1.0]).to(device)
+    pos_weight = torch.tensor([2.0]).to(device)
     loss_fn_cl = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
     global_step = 0 
-    reg_loss_weight = 2.0       
+    class_loss_weight = 1.0
+    reg_loss_weight = 5.0       
+    # weight of regression loss really matters, 5.0 is a tested good one, if it's higher, e.g., 10.0, cls result becomes worse
+
     # 5. Begin training
     for epoch in range(1, epochs + 1):
         model.train()
@@ -165,7 +168,9 @@ def train_model(
                     depth = depth.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
                     images = torch.cat([images, depth], dim=1)
 
-                true_masks = true_masks.to(device=device, dtype=torch.long)
+                true_masks = true_masks.to(device=device, dtype=torch.float32)
+                print("true mask max: ", true_masks.max())
+                print("true mask min: ", true_masks.min())  
                 true_binary_masks = true_binary_masks.to(device=device, dtype=torch.float32)
 
                 with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
@@ -175,8 +180,8 @@ def train_model(
                         reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float(), true_binary_masks.float())
                         # print(f'Loss: {loss}')
                         class_loss = loss_fn_cl(binary_pred.squeeze(1), true_binary_masks.float())
-                        class_loss += dice_loss(binary_pred.squeeze(1), true_binary_masks.float(), multiclass=False)
-
+                        class_loss += dice_loss(F.sigmoid(binary_pred.squeeze(1)), true_binary_masks.float(), multiclass=False)
+                        class_loss = class_loss_weight * class_loss
                         reg_loss = reg_loss_weight * reg_loss
                         loss = reg_loss + class_loss
 
@@ -215,8 +220,8 @@ def train_model(
                         val_score = evaluate(model, val_loader, device, amp, use_depth=use_depth)
                         scheduler.step(val_score)
 
-                        binary_mask = binary_pred.squeeze(1) > 0.5
-                        wandb_mask_pred = masks_pred.squeeze(1) * binary_mask
+                        binary_mask = F.sigmoid(binary_pred.squeeze(1)) > 0.5
+                        wandb_mask_pred = masks_pred.squeeze(1) * (F.sigmoid(binary_pred.squeeze(1))> 0.5)
 
                         logging.info('Validation Dice score: {}'.format(val_score))
                         try:
@@ -241,7 +246,7 @@ def train_model(
         if save_checkpoint and epoch % 20 == 0:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
-            state_dict['mask_values'] = dataset.mask_values
+            # state_dict['mask_values'] = dataset.mask_values
             torch.save(state_dict, str(dir_checkpoint / 'checkpoint_epoch{}.pth'.format(epoch)))
             logging.info(f'Checkpoint {epoch} saved!')
 
