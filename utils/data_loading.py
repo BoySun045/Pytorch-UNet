@@ -66,10 +66,10 @@ class BasicDataset(Dataset):
         #     ))
 
         # the above loop is too slow when the number of images is large, since I know for each image the mask values are the same and it is [0, 1], I can just hard code it
-        unique = [np.array([0, 1]) for _ in self.ids]
+        # unique = [np.array([0, 1]) for _ in self.ids]
 
-        self.mask_values = list(sorted(np.unique(np.concatenate(unique), axis=0).tolist()))
-        logging.info(f'Unique mask values: {self.mask_values}')
+        # self.mask_values = list(sorted(np.unique(np.concatenate(unique), axis=0).tolist()))
+        # logging.info(f'Unique mask values: {self.mask_values}')
 
     def __len__(self):
         return len(self.ids)
@@ -169,7 +169,7 @@ class BasicDataset(Dataset):
 
         img = self.preprocess( img, self.scale, is_mask=False)
         mask, binary_mask = self.preprocess(mask, self.scale, is_mask=True)
-
+    
         assert img.shape[1:] == mask.shape, \
             f'Image and mask {name} should have the same height and width, but are {img.shape[1:]} and {mask.shape}'
         

@@ -27,7 +27,7 @@ from torchvision.utils import save_image
 # dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/')
 # dir_debug = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/debug/')
 
-dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2_mini")
+dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2_mini_0")
 dir_img = Path(dir_path / 'image/')
 dir_mask = Path(dir_path / 'weighted_mask/')
 dir_checkpoint = Path(dir_path / 'checkpoints/')
@@ -124,7 +124,7 @@ def train_model(
                               lr=learning_rate, weight_decay=weight_decay, momentum=momentum)
     #use adam optimizer
     # optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=5)  # goal: maximize score
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=5, factor=0.5, min_lr=2e-7)  # goal: maximize score
     grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
 
     loss_fn_rg = weighted_mse_loss
@@ -255,7 +255,7 @@ def get_args():
     parser = argparse.ArgumentParser(description='Train the UNet on images and target masks')
     parser.add_argument('--epochs', '-e', metavar='E', type=int, default=500, help='Number of epochs')
     parser.add_argument('--batch-size', '-b', dest='batch_size', metavar='B', type=int, default=1, help='Batch size')
-    parser.add_argument('--learning-rate', '-l', metavar='LR', type=float, default=1e-6,
+    parser.add_argument('--learning-rate', '-l', metavar='LR', type=float, default=2e-6,
                         help='Learning rate', dest='lr')
     parser.add_argument('--load', '-f', type=str, default=False, help='Load model from a .pth file')
     parser.add_argument('--scale', '-s', type=float, default=0.5, help='Downscaling factor of the images')
