@@ -82,8 +82,10 @@ class OutConv(nn.Module):
         # add a relu layer for regression
         if activation == "relu":
             self.activation = nn.ReLU()
-        elif activation == "tanh":
+        elif activation == "stanh":
             self.activation = ScaledTanh()
+        elif activation == "tanh":
+            self.activation = nn.Tanh()
         elif activation == "sigmoid":
             self.activation = nn.Sigmoid()
         elif activation is None:

@@ -37,7 +37,7 @@ def evaluate(net, dataloader, device, amp, use_depth=False, only_depth=False):
             true_binary_mask = true_binary_mask.to(device=device, dtype=torch.long)
 
             # predict the mask
-            mask_pred, binary_pred = net(image)
+            mask_pred, binary_pred, _ = net(image)
 
             if net.n_classes == 1:
                 assert mask_true.min() >= 0 and mask_true.max() <= 1, 'True mask indices should be in [0, 1]'

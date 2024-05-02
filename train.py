@@ -27,12 +27,13 @@ from torchvision.utils import save_image
 # dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/')
 # dir_debug = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/debug/')
 
-dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2_mini_0")
+dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2_mini_1")
 dir_img = Path(dir_path / 'image/')
 dir_mask = Path(dir_path / 'weighted_mask/')
 dir_checkpoint = Path(dir_path / 'checkpoints/')
 dir_debug = Path(dir_path / 'debug/')
-
+dir_grad = Path(dir_path / 'gradient/')
+dir_depth = Path(dir_path / 'depth/')
 # make debug directory
 dir_debug.mkdir(parents=True, exist_ok=True)
 
@@ -61,6 +62,31 @@ def save_debug_images(batch, epoch, batch_idx, prefix='train', num_images=5):
             depth_path = f'{dir_debug}/{prefix}_epoch{epoch}_batch{batch_idx}_depth{i}.png'
             save_image(depths[i], depth_path)
 
+def grad_vect_to_normal_img(grad_vect_t):
+    # Check if the input has a batch dimension
+    is_batch = grad_vect_t.dim() == 4  # True if batch dimension present, false for single image
+    print("input shape: ", grad_vect_t.shape)
+    print(f'Is batch: {is_batch}')
+    # Normalize the gradients to make them unit vectors
+    dim_norm = 1 if is_batch else 0  # Normalize over channel dimension
+    norm = torch.sqrt(torch.sum(grad_vect_t ** 2, dim=dim_norm, keepdim=True))
+    normalized_grad_vect = grad_vect_t / norm
+    
+    # Rescale from [-1, 1] to [0, 255]
+    rescaled_grad_vect = ((normalized_grad_vect + 1) * 0.5 * 255).byte()  # Convert to uint8
+    
+    # Adjust dimensions and convert to numpy array
+    if is_batch:
+        # Change to (N, H, W, C) for image format in batches
+        normal_img = rescaled_grad_vect.permute(0, 2, 3, 1).cpu().numpy()
+    else:
+        # Change to (H, W, C) for single image format
+        normal_img = rescaled_grad_vect.permute(1, 2, 0).cpu().numpy()
+    
+    return normal_img
+
+  
+
 
 def train_model(
         model,
@@ -80,14 +106,14 @@ def train_model(
     # 1. Create dataset
     if use_depth:
         try:
-            dataset = CarvanaDataset(dir_img, dir_mask,dir_depth, img_scale)
+            dataset = CarvanaDataset(dir_img, dir_mask, dir_depth, img_scale)
         except (AssertionError, RuntimeError, IndexError):
             dataset = BasicDataset(dir_img, dir_mask, dir_depth, img_scale)
     else:
         try:
-            dataset = CarvanaDataset(dir_img, dir_mask, None, img_scale)
+            dataset = CarvanaDataset(dir_img, dir_mask, None, dir_grad, img_scale)
         except (AssertionError, RuntimeError, IndexError):
-            dataset = BasicDataset(dir_img, dir_mask, None,img_scale)
+            dataset = BasicDataset(dir_img, dir_mask, None, dir_grad, img_scale)
 
     # 2. Split into train / validation partitions
     n_val = int(len(dataset) * val_percent)
@@ -149,6 +175,7 @@ def train_model(
                 if not use_depth:
                     images, true_masks = batch['image'], batch['mask']
                     true_binary_masks = batch['binary_mask']
+                    grad_vect = batch['gradient']
 
                     assert images.shape[1] == model.n_channels, \
                         f'Network has been defined with {model.n_channels} input channels, ' \
@@ -156,6 +183,7 @@ def train_model(
                         'the images are loaded correctly.'
 
                     images = images.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
+
                 else: 
                     images, true_masks, depth = batch['image'], batch['mask'], batch['depth']
 
@@ -169,12 +197,12 @@ def train_model(
                     images = torch.cat([images, depth], dim=1)
 
                 true_masks = true_masks.to(device=device, dtype=torch.float32)
-                print("true mask max: ", true_masks.max())
-                print("true mask min: ", true_masks.min())  
+      
                 true_binary_masks = true_binary_masks.to(device=device, dtype=torch.float32)
+                grad_vect = grad_vect.to(device=device, dtype=torch.float32)
 
                 with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
-                    masks_pred, binary_pred = model(images)
+                    masks_pred, binary_pred, grad_pred = model(images)
                     if model.n_classes == 1:
 
                         reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float(), true_binary_masks.float())
@@ -212,16 +240,19 @@ def train_model(
                         histograms = {}
                         for tag, value in model.named_parameters():
                             tag = tag.replace('/', '.')
-                            if not (torch.isinf(value) | torch.isnan(value)).any():
-                                histograms['Weights/' + tag] = wandb.Histogram(value.data.cpu())
-                            if not (torch.isinf(value.grad) | torch.isnan(value.grad)).any():
-                                histograms['Gradients/' + tag] = wandb.Histogram(value.grad.data.cpu())
+                            if value.grad is not None:
+                                if not (torch.isinf(value) | torch.isnan(value)).any():
+                                    histograms['Weights/' + tag] = wandb.Histogram(value.data.cpu())
+                                if not (torch.isinf(value.grad) | torch.isnan(value.grad)).any():
+                                    histograms['Gradients/' + tag] = wandb.Histogram(value.grad.data.cpu())
 
                         val_score = evaluate(model, val_loader, device, amp, use_depth=use_depth)
                         scheduler.step(val_score)
 
                         binary_mask = F.sigmoid(binary_pred.squeeze(1)) > 0.5
                         wandb_mask_pred = masks_pred.squeeze(1) * (F.sigmoid(binary_pred.squeeze(1))> 0.5)
+                        grad_pred_vect = grad_vect_to_normal_img(grad_pred)
+                        grad_true_vect = grad_vect_to_normal_img(grad_vect)
 
                         logging.info('Validation Dice score: {}'.format(val_score))
                         try:
@@ -234,12 +265,15 @@ def train_model(
                                     'true': wandb.Image(true_masks[0].float().cpu()),
                                     'true_binary': wandb.Image(true_binary_masks[0].float().cpu()),
                                     'pred': wandb.Image(wandb_mask_pred[0].float().cpu()),
-                                    'pred_binary': wandb.Image(binary_mask[0].float().cpu())
+                                    'pred_binary': wandb.Image(binary_mask[0].float().cpu()),
+                                    'true_grad': wandb.Image(grad_true_vect[0]),
+                                    'pred_grad': wandb.Image(grad_pred_vect[0])
                                 },
                                 'step': global_step,
                                 'epoch': epoch,
                                 **histograms
                             })
+                            print("Images logged")
                         except:
                             pass
 

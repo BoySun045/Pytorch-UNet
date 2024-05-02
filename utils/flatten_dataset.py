@@ -41,11 +41,13 @@ flat_data_dir = Path(args.flat_data_dir)
 flat_images_dir = Path(f'{args.flat_data_dir}/image')
 flat_masks_dir = Path(f'{args.flat_data_dir}/weighted_mask')
 flat_depths_dir = Path(f'{args.flat_data_dir}/depth')
+flat_grad_dir = Path(f'{args.flat_data_dir}/gradient')
 
 flat_data_dir.mkdir(parents=True, exist_ok=True)
 flat_images_dir.mkdir(parents=True, exist_ok=True)
 flat_masks_dir.mkdir(parents=True, exist_ok=True)
 flat_depths_dir.mkdir(parents=True, exist_ok=True)
+flat_grad_dir.mkdir(parents=True, exist_ok=True)
 
 directory_path_list = find_folders(args.base_dir, args.start_id, args.end_id)
 print(directory_path_list)
@@ -60,12 +62,13 @@ for scene_dir in tqdm(directory_path_list):
     image_ids = extract_ids(scene_dir / 'image', pattern)
     mask_ids = extract_ids(scene_dir / 'weighted_mask', pattern)
     depth_ids = extract_ids(scene_dir / 'depth', pattern)
+    grad_ids = extract_ids(scene_dir / 'avg_gradient', pattern)
 
     # Find common IDs across image, depth, and mask
-    common_ids = image_ids.intersection(mask_ids).intersection(depth_ids)
+    common_ids = image_ids.intersection(mask_ids).intersection(depth_ids).intersection(grad_ids)
 
     # Process each file type (images, masks, depths)
-    for file_type, output_dir in [('image', flat_images_dir), ('weighted_mask', flat_masks_dir), ('depth', flat_depths_dir)]:
+    for file_type, output_dir in [('image', flat_images_dir), ('weighted_mask', flat_masks_dir), ('depth', flat_depths_dir), ('avg_gradient', flat_grad_dir)]:
         current_dir = scene_dir / file_type
         # print(f"Processing {file_type} files...")
         # print(f"Current directory: {current_dir}")

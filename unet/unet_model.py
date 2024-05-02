@@ -23,12 +23,15 @@ class UNet(nn.Module):
         self.up4 = (Up(128, 64, bilinear))
         
         # Paths for regression
-        self.outc_reg = OutConv(64, n_classes, activation="tanh")
+        self.outc_reg = OutConv(64, n_classes, activation="stanh")
 
         # Paths for binary classification
         # self.outc_bin = OutConv(64, n_classes, activation="sigmoid")
-        self.outc_bin = OutConv(64, n_classes, activation=None)
+        self.outc_bin = OutConv(64, n_classes, activation=None)  # sigmoid is performed post-prediction
         
+        # Path for normal prediction
+        self.outc_nor = OutConv(64, 3, activation="tanh")
+
     def forward(self, x):
         x1 = self.inc(x)
         x2 = self.down1(x1)
@@ -47,7 +50,10 @@ class UNet(nn.Module):
         # Binary classification path
         logits_bin = self.outc_bin(x)
 
-        return logits_reg, logits_bin
+        # 3d normal prediction
+        logits_nor = self.outc_nor(x)
+
+        return logits_reg, logits_bin, logits_nor
 
     def use_checkpointing(self):
         self.inc = torch.utils.checkpoint(self.inc)
