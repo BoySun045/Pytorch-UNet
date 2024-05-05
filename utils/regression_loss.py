@@ -46,8 +46,8 @@ def weighted_mse_loss(input, target, binary_mask, increase_factor=2.0):
 
     # check if the number of 0 values and 1 values in the binary mask sum up to the total number of pixels
     assert binary_mask.sum() + (binary_mask == 0).sum() == binary_mask.numel()
-    print("number of 1 values in the binary mask: ", binary_mask.sum())
-    print("number of 0 values in the binary mask: ", (binary_mask == 0).sum())
+    # print("number of 1 values in the binary mask: ", binary_mask.sum())
+    # print("number of 0 values in the binary mask: ", (binary_mask == 0).sum())
     
     # Calculate squared error
     squared_error = (input - target) ** 2

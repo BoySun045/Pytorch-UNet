@@ -27,7 +27,7 @@ from torchvision.utils import save_image
 # dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/')
 # dir_debug = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/debug/')
 
-dir_path = Path("/media/boysun/Extreme Pro/Actmap_v2_mini")
+dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2")
 dir_img = Path(dir_path / 'image/')
 dir_mask = Path(dir_path / 'weighted_mask/')
 dir_checkpoint = Path(dir_path / 'checkpoints/')
@@ -98,12 +98,12 @@ def train_model(
     print(f"Train size: {n_train}, Validation size: {n_val}")
 
     # 3. Create data loaders
-    loader_args = dict(batch_size=batch_size, num_workers=8, pin_memory=True)
+    loader_args = dict(batch_size=batch_size, num_workers=32, pin_memory=True)
     train_loader = DataLoader(train_set, shuffle=True, **loader_args)
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
     # (Initialize logging)
-    experiment = wandb.init(project='U-Net-debug', resume='allow', anonymous='must')
+    experiment = wandb.init(project='U-Net-v2', resume='allow', anonymous='must')
     experiment.config.update(
         dict(epochs=epochs, batch_size=batch_size, learning_rate=learning_rate,
              val_percent=val_percent, save_checkpoint=save_checkpoint, img_scale=img_scale, amp=amp)
@@ -268,7 +268,7 @@ def train_model(
                             except:
                                 pass
 
-        if save_checkpoint and epoch % 20 == 0:
+        if save_checkpoint and epoch % 1 == 0:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
             # state_dict['mask_values'] = dataset.mask_values
