@@ -23,7 +23,7 @@ class UNet(nn.Module):
         self.up4 = (Up(128, 64, bilinear))
         
         # Paths for regression
-        self.outc_reg = OutConv(64, n_classes, activation="tanh")
+        self.outc_reg = OutConv(64, n_classes, activation="relu")
 
         # Paths for binary classification
         # self.outc_bin = OutConv(64, n_classes, activation="sigmoid")
