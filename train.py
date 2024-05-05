@@ -27,11 +27,12 @@ from torchvision.utils import save_image
 # dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/')
 # dir_debug = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/debug/')
 
-dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2_mini_0")
+dir_path = Path("/media/boysun/Extreme Pro/Actmap_v2_mini")
 dir_img = Path(dir_path / 'image/')
 dir_mask = Path(dir_path / 'weighted_mask/')
 dir_checkpoint = Path(dir_path / 'checkpoints/')
 dir_debug = Path(dir_path / 'debug/')
+dir_depth = Path(dir_path / 'depth/')
 
 # make debug directory
 dir_debug.mkdir(parents=True, exist_ok=True)
@@ -75,7 +76,8 @@ def train_model(
         weight_decay: float = 1e-8,
         momentum: float = 0.999,
         gradient_clipping: float = 1.0,
-        use_depth: bool = False
+        use_depth: bool = False,
+        reg_loss_weight: float = 5.0
 ):
     # 1. Create dataset
     if use_depth:
@@ -124,7 +126,7 @@ def train_model(
                               lr=learning_rate, weight_decay=weight_decay, momentum=momentum)
     #use adam optimizer
     # optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=5, factor=0.5, min_lr=2e-7)  # goal: maximize score
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=8, factor=0.5, min_lr=1e-7)  # goal: maximize score
     grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
 
     loss_fn_rg = weighted_mse_loss
@@ -133,7 +135,7 @@ def train_model(
 
     global_step = 0 
     class_loss_weight = 1.0
-    reg_loss_weight = 5.0       
+    reg_loss_weight = reg_loss_weight       
     # weight of regression loss really matters, 5.0 is a tested good one, if it's higher, e.g., 10.0, cls result becomes worse
 
     # 5. Begin training
@@ -146,10 +148,9 @@ def train_model(
                 # if batch_idx == 0:
                 #     save_debug_images(batch, epoch, batch_idx, prefix='train')
 
+                true_masks, true_binary_masks = batch['mask'], batch['binary_mask']
                 if not use_depth:
-                    images, true_masks = batch['image'], batch['mask']
-                    true_binary_masks = batch['binary_mask']
-
+                    images = batch['image']
                     assert images.shape[1] == model.n_channels, \
                         f'Network has been defined with {model.n_channels} input channels, ' \
                         f'but loaded images have {images.shape[1]} channels. Please check that ' \
@@ -157,7 +158,7 @@ def train_model(
 
                     images = images.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
                 else: 
-                    images, true_masks, depth = batch['image'], batch['mask'], batch['depth']
+                    images, depth = batch['image'],batch['depth']
 
                     assert images.shape[1] + depth.shape[1] == model.n_channels, \
                         f'Network has been defined with {model.n_channels} input channels, ' \
@@ -169,9 +170,10 @@ def train_model(
                     images = torch.cat([images, depth], dim=1)
 
                 true_masks = true_masks.to(device=device, dtype=torch.float32)
-                print("true mask max: ", true_masks.max())
-                print("true mask min: ", true_masks.min())  
                 true_binary_masks = true_binary_masks.to(device=device, dtype=torch.float32)
+
+                # print("true mask max: ", true_masks.max())
+                # print("true mask min: ", true_masks.min())  
 
                 with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
                     masks_pred, binary_pred = model(images)
@@ -224,30 +226,55 @@ def train_model(
                         wandb_mask_pred = masks_pred.squeeze(1) * (F.sigmoid(binary_pred.squeeze(1))> 0.5)
 
                         logging.info('Validation Dice score: {}'.format(val_score))
-                        try:
-                                        
-                            experiment.log({
-                                'learning rate': optimizer.param_groups[0]['lr'],
-                                'validation avg score': val_score,
-                                'images': wandb.Image(images[0].cpu()),
-                                'masks': {
-                                    'true': wandb.Image(true_masks[0].float().cpu()),
-                                    'true_binary': wandb.Image(true_binary_masks[0].float().cpu()),
-                                    'pred': wandb.Image(wandb_mask_pred[0].float().cpu()),
-                                    'pred_binary': wandb.Image(binary_mask[0].float().cpu())
-                                },
-                                'step': global_step,
-                                'epoch': epoch,
-                                **histograms
-                            })
-                        except:
-                            pass
+                        # since image could be 4 channels, we need to convert it to 3 channels to get the rgb image
+                        wandb_rgb = images[:, :3, :, :]
+                        if use_depth:
+                            # depth is the last channel
+                            wandb_depth = images[:, -1, :, :]
+                            try:      
+                                experiment.log({
+                                    'learning rate': optimizer.param_groups[0]['lr'],
+                                    'validation avg score': val_score,
+                                    'images': wandb.Image(wandb_rgb[0].cpu()),
+                                    'depth': wandb.Image(wandb_depth[0].cpu()),
+                                    'masks': {
+                                        'true': wandb.Image(true_masks[0].float().cpu()),
+                                        'true_binary': wandb.Image(true_binary_masks[0].float().cpu()),
+                                        'pred': wandb.Image(wandb_mask_pred[0].float().cpu()),
+                                        'pred_binary': wandb.Image(binary_mask[0].float().cpu())
+                                    },
+                                    'step': global_step,
+                                    'epoch': epoch,
+                                    **histograms
+                                })
+                            except:
+                                pass
+                        else:
+                            try:
+                                experiment.log({
+                                    'learning rate': optimizer.param_groups[0]['lr'],
+                                    'validation avg score': val_score,
+                                    'images': wandb.Image(wandb_rgb[0].cpu()),
+                                    'masks': {
+                                        'true': wandb.Image(true_masks[0].float().cpu()),
+                                        'true_binary': wandb.Image(true_binary_masks[0].float().cpu()),
+                                        'pred': wandb.Image(wandb_mask_pred[0].float().cpu()),
+                                        'pred_binary': wandb.Image(binary_mask[0].float().cpu())
+                                    },
+                                    'step': global_step,
+                                    'epoch': epoch,
+                                    **histograms
+                                })
+                            except:
+                                pass
 
         if save_checkpoint and epoch % 20 == 0:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
             # state_dict['mask_values'] = dataset.mask_values
-            torch.save(state_dict, str(dir_checkpoint / 'checkpoint_epoch{}.pth'.format(epoch)))
+            use_depth_str = 'depth' if use_depth else 'no_depth'
+            reg_weights = str(reg_loss_weight)
+            torch.save(state_dict, str(dir_checkpoint / f'CP_epoch{epoch}_{use_depth_str}_{reg_weights}.pth'))
             logging.info(f'Checkpoint {epoch} saved!')
 
 
@@ -255,7 +282,7 @@ def get_args():
     parser = argparse.ArgumentParser(description='Train the UNet on images and target masks')
     parser.add_argument('--epochs', '-e', metavar='E', type=int, default=500, help='Number of epochs')
     parser.add_argument('--batch-size', '-b', dest='batch_size', metavar='B', type=int, default=1, help='Batch size')
-    parser.add_argument('--learning-rate', '-l', metavar='LR', type=float, default=2e-6,
+    parser.add_argument('--learning-rate', '-l', metavar='LR', type=float, default=1e-5,
                         help='Learning rate', dest='lr')
     parser.add_argument('--load', '-f', type=str, default=False, help='Load model from a .pth file')
     parser.add_argument('--scale', '-s', type=float, default=0.5, help='Downscaling factor of the images')
@@ -264,8 +291,8 @@ def get_args():
     parser.add_argument('--amp', action='store_true', default=False, help='Use mixed precision')
     parser.add_argument('--bilinear', action='store_true', default=False, help='Use bilinear upsampling')
     parser.add_argument('--classes', '-c', type=int, default=1, help='Number of classes')
-
-    parser.add_argument('--use_depth', action='store_true', default=False, help='Use depth image')
+    parser.add_argument('--reg_loss_weight', '-rw', type=float, default=5.0, help='Weight of regression loss')
+    parser.add_argument('--use_depth','-ud', action='store_true', default=False, help='Use depth image')
 
     return parser.parse_args()
 
@@ -309,7 +336,8 @@ if __name__ == '__main__':
             img_scale=args.scale,
             val_percent=args.val / 100,
             amp=args.amp,
-            use_depth=args.use_depth
+            use_depth=args.use_depth,
+            reg_loss_weight=args.reg_loss_weight
         )
     except torch.cuda.OutOfMemoryError:
         logging.error('Detected OutOfMemoryError! '
@@ -326,5 +354,6 @@ if __name__ == '__main__':
             img_scale=args.scale,
             val_percent=args.val / 100,
             amp=args.amp,
-            use_depth=args.use_depth
+            use_depth=args.use_depth,
+            reg_loss_weight=args.reg_loss_weight
         )

@@ -39,7 +39,7 @@ def load_image(filename):
 
 
 class BasicDataset(Dataset):
-    def __init__(self, images_dir: str, mask_dir: str, depth_dir: str, scale: float = 1.0, mask_suffix: str = ''):
+    def __init__(self, images_dir: str, mask_dir: str, depth_dir: str = None, scale: float = 1.0, mask_suffix: str = ''):
         self.images_dir = Path(images_dir)
         self.mask_dir = Path(mask_dir)
         assert 0 < scale <= 1, 'Scale must be between 0 and 1'
@@ -59,17 +59,6 @@ class BasicDataset(Dataset):
         logging.info(f'Creating dataset with {len(self.ids)} examples')
         logging.info('Scanning mask files to determine unique values')
 
-        # with Pool() as p:
-        #     unique = list(tqdm(
-        #         p.imap(partial(unique_mask_values, mask_dir=self.mask_dir, mask_suffix=self.mask_suffix), self.ids),
-        #         total=len(self.ids)
-        #     ))
-
-        # the above loop is too slow when the number of images is large, since I know for each image the mask values are the same and it is [0, 1], I can just hard code it
-        # unique = [np.array([0, 1]) for _ in self.ids]
-
-        # self.mask_values = list(sorted(np.unique(np.concatenate(unique), axis=0).tolist()))
-        # logging.info(f'Unique mask values: {self.mask_values}')
 
     def __len__(self):
         return len(self.ids)
@@ -122,7 +111,7 @@ class BasicDataset(Dataset):
     #         return img
 
     @staticmethod
-    def preprocess(pil_img, scale, is_mask):
+    def preprocess(pil_img, scale, is_mask, is_depth=False):
 
         if is_mask:
             # if it is mask, the input is directly a np array with weights value 
@@ -135,6 +124,7 @@ class BasicDataset(Dataset):
             binary_mask = (mask > 0.0001).astype(np.int64)
             return mask, binary_mask
 
+
         else:
             w, h = pil_img.size
             newW, newH = int(scale * w), int(scale * h)
@@ -142,15 +132,34 @@ class BasicDataset(Dataset):
             pil_img = pil_img.resize((newW, newH), resample=Image.NEAREST if is_mask else Image.BICUBIC)
             img = np.asarray(pil_img)
 
-            if img.ndim == 2:
-                img = img[np.newaxis, ...]
-            else:
-                img = img.transpose((2, 0, 1))
+            if is_depth:
+                if img.ndim == 2:
+                    img = img[np.newaxis, ...]
+                else:
+                    img = img.transpose((2, 0, 1))
 
-            if (img > 1).any():
-                img = img / 255.0
+                # depth should be with only one channel
+                if not img.shape[0] == 1:
+                    # make it with only one channel but keep the same dimension (1, H, W)
+                    img = img[0:1, ...]
 
-            return img
+                # normalize depth 
+                img_min = img.min()
+                img_max = img.max()
+                img = (img - img_min) / (img_max - img_min)
+
+                return img
+
+            if not is_depth:
+                if img.ndim == 2:
+                    img = img[np.newaxis, ...]
+                else:
+                    img = img.transpose((2, 0, 1))
+
+                if (img > 1).any():
+                    img = img / 255.0
+
+                return img
 
 
     def __getitem__(self, idx):
@@ -164,20 +173,35 @@ class BasicDataset(Dataset):
         mask = load_image(mask_file[0])
         img = load_image(img_file[0])
 
+        if self.depth_dir is not None:
+            depth_file = list(self.depth_dir.glob(name + '.*'))
+            assert len(depth_file) == 1, f'Either no depth image or multiple depth images found for the ID {name}: {depth_file}'
+            depth = load_image(depth_file[0])
+            depth = self.preprocess(depth, self.scale, is_mask=False, is_depth=True)
+
         # assert img.size == mask.size, \
         #     f'Image and mask {name} should be the same size, but are {img.size} and {mask.size}'
 
-        img = self.preprocess( img, self.scale, is_mask=False)
-        mask, binary_mask = self.preprocess(mask, self.scale, is_mask=True)
+        img = self.preprocess( img, self.scale, is_mask=False, is_depth=False)
+        mask, binary_mask = self.preprocess(mask, self.scale, is_mask=True, is_depth=False)
     
         assert img.shape[1:] == mask.shape, \
             f'Image and mask {name} should have the same height and width, but are {img.shape[1:]} and {mask.shape}'
         
-        return {
-            'image': torch.as_tensor(img.copy()).float().contiguous(),
-            'mask': torch.as_tensor(mask.copy()).float().contiguous(),
-            'binary_mask': torch.as_tensor(binary_mask.copy()).long().contiguous()
-        }
+        if self.depth_dir is not None: 
+            return {
+                'image': torch.as_tensor(img.copy()).float().contiguous(),
+                'mask': torch.as_tensor(mask.copy()).float().contiguous(),
+                'binary_mask': torch.as_tensor(binary_mask.copy()).long().contiguous(),
+                'depth': torch.as_tensor(depth.copy()).float().contiguous()
+            }
+        
+        else:
+            return {
+                'image': torch.as_tensor(img.copy()).float().contiguous(),
+                'mask': torch.as_tensor(mask.copy()).float().contiguous(),
+                'binary_mask': torch.as_tensor(binary_mask.copy()).long().contiguous()
+            }
 
 
 class CarvanaDataset(BasicDataset):
