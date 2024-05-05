@@ -18,7 +18,7 @@ from evaluate import evaluate
 from unet import UNet
 from utils.data_loading import BasicDataset, CarvanaDataset
 from utils.dice_score import dice_loss
-from utils.regression_loss import mse_loss, weighted_mse_loss, mae_loss
+from utils.regression_loss import mse_loss, weighted_mse_loss, mae_loss, weighted_huber_loss
 from torchvision.utils import save_image
 
 # dir_img = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/image/')
@@ -74,7 +74,7 @@ def train_model(
         img_scale: float = 0.5,
         amp: bool = False,
         weight_decay: float = 1e-8,
-        momentum: float = 0.999,
+        momentum: float = 0.9,
         gradient_clipping: float = 1.0,
         use_depth: bool = False,
         reg_loss_weight: float = 5.0
@@ -126,10 +126,11 @@ def train_model(
                               lr=learning_rate, weight_decay=weight_decay, momentum=momentum)
     #use adam optimizer
     # optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=8, factor=0.5, min_lr=1e-7)  # goal: maximize score
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=5, factor=0.5, min_lr=5e-8)  # goal: maximize score
     grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
 
-    loss_fn_rg = weighted_mse_loss
+    # loss_fn_rg = weighted_mse_loss
+    loss_fn_rg = weighted_huber_loss
     pos_weight = torch.tensor([2.0]).to(device)
     loss_fn_cl = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
@@ -282,7 +283,7 @@ def get_args():
     parser = argparse.ArgumentParser(description='Train the UNet on images and target masks')
     parser.add_argument('--epochs', '-e', metavar='E', type=int, default=500, help='Number of epochs')
     parser.add_argument('--batch-size', '-b', dest='batch_size', metavar='B', type=int, default=1, help='Batch size')
-    parser.add_argument('--learning-rate', '-l', metavar='LR', type=float, default=1e-5,
+    parser.add_argument('--learning-rate', '-l', metavar='LR', type=float, default=2e-6,
                         help='Learning rate', dest='lr')
     parser.add_argument('--load', '-f', type=str, default=False, help='Load model from a .pth file')
     parser.add_argument('--scale', '-s', type=float, default=0.5, help='Downscaling factor of the images')
