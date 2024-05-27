@@ -10,7 +10,8 @@ class UNet(nn.Module):
         self.n_classes = n_classes
         self.bilinear = bilinear
 
-        self.inc = (DoubleConv(n_channels, 64))
+        # self.inc = (DoubleConv(n_channels, 64))
+        self.inc = (TripleConv(n_channels, 64))
         self.down1 = (Down(64, 128))
         self.down2 = (Down(128, 256))
         self.down3 = (Down(256, 512))
@@ -23,11 +24,11 @@ class UNet(nn.Module):
         self.up4 = (Up(128, 64, bilinear))
         
         # Paths for regression
-        self.outc_reg = OutConv(64, n_classes, activation="relu")
+        self.outc_reg = OutConv(64, n_classes, activation="relu")  # can also use tanh
 
         # Paths for binary classification
-        # self.outc_bin = OutConv(64, n_classes, activation="sigmoid")
-        self.outc_bin = OutConv(64, n_classes, activation=None)
+        # self.outc_bin = OutConv(64, n_classes, activation=None)
+        self.outc_bin = ClOutConv(64, n_classes, activation=None)
         
     def forward(self, x):
         x1 = self.inc(x)

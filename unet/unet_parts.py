@@ -24,7 +24,28 @@ class DoubleConv(nn.Module):
     def forward(self, x):
         return self.double_conv(x)
 
+class TripleConv(nn.Module):
+    """(convolution => [BN] => ReLU) * 3"""
 
+    def __init__(self, in_channels, out_channels, mid_channels=None):
+        super().__init__()
+        if not mid_channels:
+            mid_channels = out_channels
+        self.triple_conv = nn.Sequential(
+            nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(mid_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(mid_channels, mid_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(mid_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(mid_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True)
+        )
+
+    def forward(self, x):
+        return self.triple_conv(x)
+    
 class Down(nn.Module):
     """Downscaling with maxpool then double conv"""
 
@@ -32,7 +53,8 @@ class Down(nn.Module):
         super().__init__()
         self.maxpool_conv = nn.Sequential(
             nn.MaxPool2d(2),
-            DoubleConv(in_channels, out_channels)
+            # DoubleConv(in_channels, out_channels)
+            TripleConv(in_channels, out_channels)
         )
 
     def forward(self, x):
@@ -48,10 +70,12 @@ class Up(nn.Module):
         # if bilinear, use the normal convolutions to reduce the number of channels
         if bilinear:
             self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-            self.conv = DoubleConv(in_channels, out_channels, in_channels // 2)
+            # self.conv = DoubleConv(in_channels, out_channels, in_channels // 2)
+            self.conv = TripleConv(in_channels, out_channels, in_channels // 2)
         else:
             self.up = nn.ConvTranspose2d(in_channels, in_channels // 2, kernel_size=2, stride=2)
-            self.conv = DoubleConv(in_channels, out_channels)
+            # self.conv = DoubleConv(in_channels, out_channels)
+            self.conv = TripleConv(in_channels, out_channels)
 
     def forward(self, x1, x2):
         x1 = self.up(x1)
@@ -75,12 +99,44 @@ class ScaledTanh(nn.Module):
         return 0.5 * (torch.tanh(x) + 1.0)
 
 
+class ClOutConv(nn.Module):
+    def __init__(self, in_channels, out_channels, activation=None):
+        super(ClOutConv, self).__init__()
+        # add 2 more 3x3 conv layers
+        self.conv1 = nn.Conv2d(in_channels, in_channels, kernel_size=5, padding=2,bias=False)
+        self.conv2 = nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1,bias=False)
+        self.batch_norm_1 = nn.BatchNorm2d(in_channels)
+        self.batch_norm_2 = nn.BatchNorm2d(in_channels)
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+        # add a relu layer for regression
+        if activation == "relu":
+            self.activation = nn.ReLU()
+        elif activation == "tanh":
+            self.activation = ScaledTanh()
+        elif activation == "sigmoid":
+            self.activation = nn.Sigmoid()
+        elif activation is None:
+            # default to no activation
+            self.activation = nn.Identity()
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.batch_norm_1(x) 
+        x = nn.ReLU(inplace=True)(x)
+        x = self.conv2(x)
+        x = self.batch_norm_2(x)
+        x = nn.ReLU(inplace=True)(x)
+        x = self.conv(x)
+        x = self.activation(x)
+        return x
+    
+
 class OutConv(nn.Module):
     def __init__(self, in_channels, out_channels, activation=None):
         super(OutConv, self).__init__()
         # add 2 more 3x3 conv layers
-        self.conv1 = nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1)
+        # self.conv1 = nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1)
+        # self.conv2 = nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1)
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
         # add a relu layer for regression
         if activation == "relu":

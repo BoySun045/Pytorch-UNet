@@ -83,7 +83,7 @@ def weighted_huber_loss(input, target, binary_mask, delta=1.0, increase_factor=2
     weight_map = torch.ones_like(target)
     weight_map[binary_mask > 0] *= increase_factor
     # for the case where the mask is 0, we don't want to pass gradient, so we set the weight to 0
-    weight_map[binary_mask == 0] = 0
+    weight_map[binary_mask == 0] = 0.2
 
     # check if the number of 0 values and 1 values in the binary mask sum up to the total number of pixels
     assert binary_mask.sum() + (binary_mask == 0).sum() == binary_mask.numel()
@@ -97,10 +97,10 @@ def weighted_huber_loss(input, target, binary_mask, delta=1.0, increase_factor=2
     huber_loss = criterion(input, target)
 
     # Apply binary mask to consider errors only where binary_mask is 1
-    masked_huber_loss = huber_loss * binary_mask
+    # masked_huber_loss = huber_loss * binary_mask
 
     # Apply weights
-    weighted_huber_loss = masked_huber_loss * weight_map
+    weighted_huber_loss = huber_loss * weight_map
 
     # Compute the mean loss over all pixels
     loss = weighted_huber_loss.sum() / binary_mask.sum()
