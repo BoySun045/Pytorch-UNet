@@ -11,7 +11,7 @@ from os.path import splitext, isfile, join
 from pathlib import Path
 from torch.utils.data import Dataset
 from tqdm import tqdm
-
+from utils.data_augmentation import get_transforms
 
 # def load_image(filename):
 #     ext = splitext(filename)[1]
@@ -59,6 +59,8 @@ class BasicDataset(Dataset):
         logging.info(f'Creating dataset with {len(self.ids)} examples')
         logging.info('Scanning mask files to determine unique values')
 
+        # data augmentation
+        self.transforms = get_transforms()
 
     def __len__(self):
         return len(self.ids)
@@ -184,23 +186,59 @@ class BasicDataset(Dataset):
 
         img = self.preprocess( img, self.scale, is_mask=False, is_depth=False)
         mask, binary_mask = self.preprocess(mask, self.scale, is_mask=True, is_depth=False)
-    
+
+        # data augmentation
+        # Transpose image and masks to (H, W, C)
+        img = np.transpose(img, (1, 2, 0))
+        mask = np.transpose(mask, (1, 2, 0)) if mask.ndim == 3 else mask[..., np.newaxis]
+        binary_mask = np.transpose(binary_mask, (1, 2, 0)) if binary_mask.ndim == 3 else binary_mask[..., np.newaxis]
+        
+        sample = {'image': img, 'mask': mask, 'binary_mask': binary_mask}
+        # print shape of img mask and binary_mask separately
+        # print(f"image shape: {img.shape}")
+        # print(f"mask shape: {mask.shape}")
+        # print(f"binary_mask shape: {binary_mask.shape}")
+        if self.depth_dir is not None:
+            sample['depth'] = depth
+        if self.transforms:
+            augmented = self.transforms(**sample)
+            img = augmented['image']
+            mask = augmented['mask']
+            binary_mask = augmented['binary_mask']
+            if self.depth_dir is not None:
+                depth = augmented['depth']
+
+        # print(f"image shape after data augmentation: {img.shape}")
+        # print(f"mask shape after data augmentation: {mask.shape}")
+        # print(f"binary_mask shape after data augmentation: {binary_mask.shape}")
+
+        # Transpose back to (C, H, W)
+        # img = np.transpose(img, (2, 0, 1)) 
+        mask = np.transpose(mask, (2, 0, 1)).squeeze() if mask.ndim == 3 else mask.squeeze(-1)
+        binary_mask = np.transpose(binary_mask, (2, 0, 1)).squeeze() if binary_mask.ndim == 3 else binary_mask.squeeze(-1)
+
+
+        # print their shape after data augmentation separately
+        # print(f"image shape after data augmentation: {img.shape}")
+        # print(f"mask shape after data augmentation: {mask.shape}")
+        # print(f"binary_mask shape after data augmentation: {binary_mask.shape}")
+
         assert img.shape[1:] == mask.shape, \
             f'Image and mask {name} should have the same height and width, but are {img.shape[1:]} and {mask.shape}'
         
         if self.depth_dir is not None: 
             return {
-                'image': torch.as_tensor(img.copy()).float().contiguous(),
-                'mask': torch.as_tensor(mask.copy()).float().contiguous(),
-                'binary_mask': torch.as_tensor(binary_mask.copy()).long().contiguous(),
-                'depth': torch.as_tensor(depth.copy()).float().contiguous()
+                'image': torch.as_tensor(img).float().contiguous(),
+                'mask': torch.as_tensor(mask).float().contiguous(),
+                'binary_mask': torch.as_tensor(binary_mask).long().contiguous(),
+                'depth': torch.as_tensor(depth).float().contiguous()
             }
         
         else:
             return {
-                'image': torch.as_tensor(img.copy()).float().contiguous(),
-                'mask': torch.as_tensor(mask.copy()).float().contiguous(),
-                'binary_mask': torch.as_tensor(binary_mask.copy()).long().contiguous()
+                'image': torch.as_tensor(img).float().contiguous(),
+                'mask': torch.as_tensor(mask).float().contiguous(),
+                'binary_mask': torch.as_tensor(binary_mask).long().contiguous()
             }
 
 

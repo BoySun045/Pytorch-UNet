@@ -77,7 +77,8 @@ def train_model(
         momentum: float = 0.9,
         gradient_clipping: float = 1.0,
         use_depth: bool = False,
-        reg_loss_weight: float = 5.0
+        reg_loss_weight: float = 5.0,
+        head_mode: str = 'segmentation'
 ):
     # 1. Create dataset
     if use_depth:
@@ -149,11 +150,7 @@ def train_model(
                 # if batch_idx == 0:
                 #     save_debug_images(batch, epoch, batch_idx, prefix='train')
 
-                # predict both regression and classification
                 true_masks, true_binary_masks = batch['mask'], batch['binary_mask']
-
-                # predict only classification
-                # true_binary_masks = batch['binary_mask']
 
                 if not use_depth:
                     images = batch['image']
@@ -184,25 +181,30 @@ def train_model(
                 # print("true mask min: ", true_masks.min())  
 
                 with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
-                    # binary_pred, masks_pred = model(images)
-                    # binary_pred = model(images)
-                    masks_pred = model(images)
-                    
-                    if model.n_classes == 1:
 
+                    if head_mode == 'both':
+                        binary_pred, masks_pred = model(images)
                         reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float(), true_binary_masks.float(), increase_factor=5.0, avg_using_binary_mask=False)
-                        # print(f'Loss: {loss}')
+                        class_loss = loss_fn_cl(binary_pred.squeeze(1), true_binary_masks.float())
+                        class_loss += dice_loss(F.sigmoid(binary_pred.squeeze(1)), true_binary_masks.float(), multiclass=False)
+                        class_loss = class_loss_weight * class_loss
+                        reg_loss = reg_loss_weight * reg_loss
+                        loss = reg_loss + class_loss
 
-                        # two losses
-                        # class_loss = loss_fn_cl(binary_pred.squeeze(1), true_binary_masks.float())
-                        # class_loss += dice_loss(F.sigmoid(binary_pred.squeeze(1)), true_binary_masks.float(), multiclass=False)
-                        # class_loss = class_loss_weight * class_loss
-                        # reg_loss = reg_loss_weight * reg_loss
-                        # loss = reg_loss + class_loss
+                    elif head_mode == 'segmentation':
+                        binary_pred = model(images)
+                        class_loss = loss_fn_cl(binary_pred.squeeze(1), true_binary_masks.float())
+                        class_loss += dice_loss(F.sigmoid(binary_pred.squeeze(1)), true_binary_masks.float(), multiclass=False)
+                        loss =  class_loss
+
+                        reg_loss = None
                         
-                        # only regression loss
+                    elif head_mode == 'regression':
+                        masks_pred = model(images)
+                        reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float(), true_binary_masks.float(), increase_factor=5.0, avg_using_binary_mask=False)
                         loss = reg_loss
-                    
+
+                        class_loss = None
 
                 optimizer.zero_grad(set_to_none=True)
                 grad_scaler.scale(loss).backward()
@@ -215,8 +217,8 @@ def train_model(
                 epoch_loss += loss.item()
                 experiment.log({
                         'train loss total': loss.item(),
-                        'train loss regression': reg_loss.item(),
-                        # 'train loss classification': class_loss.item(),
+                        'train loss regression': reg_loss.item() if reg_loss is not None else 0.0,
+                        'train loss classification': class_loss.item() if class_loss is not None else 0.0,
                         'step': global_step,
                         'epoch': epoch
                     })
@@ -235,21 +237,27 @@ def train_model(
                             if not (torch.isinf(value.grad) | torch.isnan(value.grad)).any():
                                 histograms['Gradients/' + tag] = wandb.Histogram(value.grad.data.cpu())
 
-                        # two scores
-                        # val_score_cl, val_score_rg = evaluate(model, val_loader, device, amp, use_depth=use_depth)
-                        # scheduler.step(val_score_cl - val_score_rg)
+                        val_score_cl, val_score_rg = evaluate(model, val_loader, device, amp, use_depth=use_depth, head_mode = head_mode)
 
-                        # only regression score
-                        val_score_rg = evaluate(model, val_loader, device, amp, use_depth=use_depth)
-                        scheduler.step(1 - val_score_rg)
+                        if head_mode == 'both':
+                            scheduler.step(val_score_cl - val_score_rg)
+                            binary_mask = F.sigmoid(binary_pred.squeeze(1)) > 0.5
+                            wandb_mask_pred = masks_pred.squeeze(1) * (F.sigmoid(binary_pred.squeeze(1))> 0.5)
 
+                        elif head_mode == 'segmentation':
+                            scheduler.step(1 - val_score_cl)
+                            binary_mask = F.sigmoid(binary_pred.squeeze(1)) > 0.5
+                            # masks_pred does not exist in this case, put a dummy tensor
+                            masks_pred = torch.zeros_like(true_masks)
+                            wandb_mask_pred = masks_pred.squeeze(1) * (F.sigmoid(binary_pred.squeeze(1))> 0.5)
 
-                        # binary_mask = F.sigmoid(binary_pred.squeeze(1)) > 0.5
-                        # wandb_mask_pred = masks_pred.squeeze(1) * (F.sigmoid(binary_pred.squeeze(1))> 0.5)
-                        wandb_mask_pred = masks_pred.squeeze(1)
+                        elif head_mode == 'regression':
+                            scheduler.step(1 - val_score_rg)
+                            wandb_mask_pred = masks_pred.squeeze(1)
+                            # binary_mask does not exist in this case, put a dummy tensor
+                            binary_mask = torch.zeros_like(true_masks)
 
-                        # logging.info('Validation Dice score: {}'.format(val_score))
-                        # logging.info(f'Validation Classification Dice score: {val_score_cl}')
+                        logging.info(f'Validation Classification Dice score: {val_score_cl}')
                         logging.info(f'Validation Regression mse : {val_score_rg}')
 
                         # since image could be 4 channels, we need to convert it to 3 channels to get the rgb image
@@ -260,7 +268,7 @@ def train_model(
                             try:      
                                 experiment.log({
                                     'learning rate': optimizer.param_groups[0]['lr'],
-                                    # 'validation avg score classification': val_score_cl,
+                                    'validation avg score classification': val_score_cl,
                                     'validation avg score regression': val_score_rg,
                                     'images': wandb.Image(wandb_rgb[0].cpu()),
                                     'depth': wandb.Image(wandb_depth[0].cpu()),
@@ -268,7 +276,7 @@ def train_model(
                                         'true': wandb.Image(true_masks[0].float().cpu()),
                                         'true_binary': wandb.Image(true_binary_masks[0].float().cpu()),
                                         'pred': wandb.Image(wandb_mask_pred[0].float().cpu()),
-                                        # 'pred_binary': wandb.Image(binary_mask[0].float().cpu())
+                                        'pred_binary': wandb.Image(binary_mask[0].float().cpu())
                                     },
                                     'step': global_step,
                                     'epoch': epoch,
@@ -280,14 +288,14 @@ def train_model(
                             try:
                                 experiment.log({
                                     'learning rate': optimizer.param_groups[0]['lr'],
-                                    # 'validation avg score classification': val_score_cl,
+                                    'validation avg score classification': val_score_cl,
                                     'validation avg score regression': val_score_rg,
                                     'images': wandb.Image(wandb_rgb[0].cpu()),
                                     'masks': {
                                         'true': wandb.Image(true_masks[0].float().cpu()),
                                         'true_binary': wandb.Image(true_binary_masks[0].float().cpu()),
                                         'pred': wandb.Image(wandb_mask_pred[0].float().cpu()),
-                                        # 'pred_binary': wandb.Image(binary_mask[0].float().cpu())
+                                        'pred_binary': wandb.Image(binary_mask[0].float().cpu())
                                     },
                                     'step': global_step,
                                     'epoch': epoch,
@@ -321,7 +329,7 @@ def get_args():
     parser.add_argument('--classes', '-c', type=int, default=1, help='Number of classes')
     parser.add_argument('--reg_loss_weight', '-rw', type=float, default=1.0, help='Weight of regression loss')
     parser.add_argument('--use_depth','-ud', action='store_true', default=False, help='Use depth image')
-
+    parser.add_argument('--head_mode', type=str, default='segmentation', help='both or segmentation or regression')
     return parser.parse_args()
 
 
@@ -332,6 +340,7 @@ if __name__ == '__main__':
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info(f'Using device {device}')
 
+    head_mode = args.head_mode
     # Change here to adapt to your data
     # n_channels=3 for RGB images
     # n_channels=4 for RGB-D images
@@ -341,13 +350,13 @@ if __name__ == '__main__':
         # model = UnetResnet(n_classes=args.classes)
         model = TwoHeadUnet(classes=args.classes,
                             in_channels=4,
-                            head_config = "regression")
+                            head_config = head_mode)
     else:
         # model = UNet(n_channels=3, n_classes=args.classes, bilinear=args.bilinear)
         # model = UnetResnet(n_classes=args.classes)
         model = TwoHeadUnet(classes=args.classes,
                             in_channels=3,
-                            head_config = "regression")
+                            head_config = head_mode)
         
     model = model.to(memory_format=torch.channels_last)
 
@@ -374,7 +383,8 @@ if __name__ == '__main__':
             val_percent=args.val / 100,
             amp=args.amp,
             use_depth=args.use_depth,
-            reg_loss_weight=args.reg_loss_weight
+            reg_loss_weight=args.reg_loss_weight,
+            head_mode = head_mode
         )
     except torch.cuda.OutOfMemoryError:
         logging.error('Detected OutOfMemoryError! '
@@ -392,5 +402,6 @@ if __name__ == '__main__':
             val_percent=args.val / 100,
             amp=args.amp,
             use_depth=args.use_depth,
-            reg_loss_weight=args.reg_loss_weight
+            reg_loss_weight=args.reg_loss_weight,
+            head_mode = head_mode
         )
