@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 import wandb
 from evaluate import evaluate
-from unet import UNet
+from unet import UNet, UnetResnet, TwoHeadUnet
 from utils.data_loading import BasicDataset, CarvanaDataset
 from utils.dice_score import dice_loss
 from utils.regression_loss import mse_loss, weighted_mse_loss, mae_loss, weighted_huber_loss
@@ -27,7 +27,7 @@ from torchvision.utils import save_image
 # dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/')
 # dir_debug = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/debug/')
 
-dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2")
+dir_path = Path("/media/boysun/Extreme Pro/Actmap_v2_mini")
 dir_img = Path(dir_path / 'image/')
 dir_mask = Path(dir_path / 'weighted_mask/')
 dir_checkpoint = Path(dir_path / 'checkpoints/')
@@ -98,12 +98,12 @@ def train_model(
     print(f"Train size: {n_train}, Validation size: {n_val}")
 
     # 3. Create data loaders
-    loader_args = dict(batch_size=batch_size, num_workers=32, pin_memory=True)
+    loader_args = dict(batch_size=batch_size, num_workers=16, pin_memory=True)
     train_loader = DataLoader(train_set, shuffle=True, **loader_args)
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
     # (Initialize logging)
-    experiment = wandb.init(project='U-Net-v2', resume='allow', anonymous='must')
+    experiment = wandb.init(project='U-Net-resnet', resume='allow', anonymous='must')
     experiment.config.update(
         dict(epochs=epochs, batch_size=batch_size, learning_rate=learning_rate,
              val_percent=val_percent, save_checkpoint=save_checkpoint, img_scale=img_scale, amp=amp)
@@ -149,11 +149,17 @@ def train_model(
                 # if batch_idx == 0:
                 #     save_debug_images(batch, epoch, batch_idx, prefix='train')
 
+                # predict both regression and classification
                 true_masks, true_binary_masks = batch['mask'], batch['binary_mask']
+
+                # predict only classification
+                # true_binary_masks = batch['binary_mask']
+
                 if not use_depth:
                     images = batch['image']
-                    assert images.shape[1] == model.n_channels, \
-                        f'Network has been defined with {model.n_channels} input channels, ' \
+                    # assert images.shape[1] == model.n_channels, \
+                    assert images.shape[1] == 3, \
+                        f'Network has been defined with {3} input channels, ' \
                         f'but loaded images have {images.shape[1]} channels. Please check that ' \
                         'the images are loaded correctly.'
 
@@ -161,8 +167,9 @@ def train_model(
                 else: 
                     images, depth = batch['image'],batch['depth']
 
-                    assert images.shape[1] + depth.shape[1] == model.n_channels, \
-                        f'Network has been defined with {model.n_channels} input channels, ' \
+                    # assert images.shape[1] + depth.shape[1] == model.n_channels, \
+                    assert images.shape[1] + depth.shape[1] == 4, \
+                        f'Network has been defined with {4} input channels, ' \
                         f'but loaded images have {images.shape[1]} channels. Please check that ' \
                         'the images are loaded correctly.'
 
@@ -177,17 +184,25 @@ def train_model(
                 # print("true mask min: ", true_masks.min())  
 
                 with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
-                    masks_pred, binary_pred = model(images)
+                    # binary_pred, masks_pred = model(images)
+                    # binary_pred = model(images)
+                    masks_pred = model(images)
+                    
                     if model.n_classes == 1:
 
-                        reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float(), true_binary_masks.float())
+                        reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float(), true_binary_masks.float(), increase_factor=5.0, avg_using_binary_mask=False)
                         # print(f'Loss: {loss}')
-                        class_loss = loss_fn_cl(binary_pred.squeeze(1), true_binary_masks.float())
-                        class_loss += dice_loss(F.sigmoid(binary_pred.squeeze(1)), true_binary_masks.float(), multiclass=False)
-                        class_loss = class_loss_weight * class_loss
-                        reg_loss = reg_loss_weight * reg_loss
-                        loss = reg_loss + class_loss
 
+                        # two losses
+                        # class_loss = loss_fn_cl(binary_pred.squeeze(1), true_binary_masks.float())
+                        # class_loss += dice_loss(F.sigmoid(binary_pred.squeeze(1)), true_binary_masks.float(), multiclass=False)
+                        # class_loss = class_loss_weight * class_loss
+                        # reg_loss = reg_loss_weight * reg_loss
+                        # loss = reg_loss + class_loss
+                        
+                        # only regression loss
+                        loss = reg_loss
+                    
 
                 optimizer.zero_grad(set_to_none=True)
                 grad_scaler.scale(loss).backward()
@@ -201,7 +216,7 @@ def train_model(
                 experiment.log({
                         'train loss total': loss.item(),
                         'train loss regression': reg_loss.item(),
-                        'train loss classification': class_loss.item(),
+                        # 'train loss classification': class_loss.item(),
                         'step': global_step,
                         'epoch': epoch
                     })
@@ -209,7 +224,7 @@ def train_model(
 
                 # Evaluation round
                 division_step = (n_train // (5 * batch_size))
-                division_step = 100
+                division_step = 50
                 if division_step > 0:
                     if global_step % division_step == 0:
                         histograms = {}
@@ -220,13 +235,23 @@ def train_model(
                             if not (torch.isinf(value.grad) | torch.isnan(value.grad)).any():
                                 histograms['Gradients/' + tag] = wandb.Histogram(value.grad.data.cpu())
 
-                        val_score = evaluate(model, val_loader, device, amp, use_depth=use_depth)
-                        scheduler.step(val_score)
+                        # two scores
+                        # val_score_cl, val_score_rg = evaluate(model, val_loader, device, amp, use_depth=use_depth)
+                        # scheduler.step(val_score_cl - val_score_rg)
 
-                        binary_mask = F.sigmoid(binary_pred.squeeze(1)) > 0.5
-                        wandb_mask_pred = masks_pred.squeeze(1) * (F.sigmoid(binary_pred.squeeze(1))> 0.5)
+                        # only regression score
+                        val_score_rg = evaluate(model, val_loader, device, amp, use_depth=use_depth)
+                        scheduler.step(1 - val_score_rg)
 
-                        logging.info('Validation Dice score: {}'.format(val_score))
+
+                        # binary_mask = F.sigmoid(binary_pred.squeeze(1)) > 0.5
+                        # wandb_mask_pred = masks_pred.squeeze(1) * (F.sigmoid(binary_pred.squeeze(1))> 0.5)
+                        wandb_mask_pred = masks_pred.squeeze(1)
+
+                        # logging.info('Validation Dice score: {}'.format(val_score))
+                        # logging.info(f'Validation Classification Dice score: {val_score_cl}')
+                        logging.info(f'Validation Regression mse : {val_score_rg}')
+
                         # since image could be 4 channels, we need to convert it to 3 channels to get the rgb image
                         wandb_rgb = images[:, :3, :, :]
                         if use_depth:
@@ -235,14 +260,15 @@ def train_model(
                             try:      
                                 experiment.log({
                                     'learning rate': optimizer.param_groups[0]['lr'],
-                                    'validation avg score': val_score,
+                                    # 'validation avg score classification': val_score_cl,
+                                    'validation avg score regression': val_score_rg,
                                     'images': wandb.Image(wandb_rgb[0].cpu()),
                                     'depth': wandb.Image(wandb_depth[0].cpu()),
                                     'masks': {
                                         'true': wandb.Image(true_masks[0].float().cpu()),
                                         'true_binary': wandb.Image(true_binary_masks[0].float().cpu()),
                                         'pred': wandb.Image(wandb_mask_pred[0].float().cpu()),
-                                        'pred_binary': wandb.Image(binary_mask[0].float().cpu())
+                                        # 'pred_binary': wandb.Image(binary_mask[0].float().cpu())
                                     },
                                     'step': global_step,
                                     'epoch': epoch,
@@ -254,13 +280,14 @@ def train_model(
                             try:
                                 experiment.log({
                                     'learning rate': optimizer.param_groups[0]['lr'],
-                                    'validation avg score': val_score,
+                                    # 'validation avg score classification': val_score_cl,
+                                    'validation avg score regression': val_score_rg,
                                     'images': wandb.Image(wandb_rgb[0].cpu()),
                                     'masks': {
                                         'true': wandb.Image(true_masks[0].float().cpu()),
                                         'true_binary': wandb.Image(true_binary_masks[0].float().cpu()),
                                         'pred': wandb.Image(wandb_mask_pred[0].float().cpu()),
-                                        'pred_binary': wandb.Image(binary_mask[0].float().cpu())
+                                        # 'pred_binary': wandb.Image(binary_mask[0].float().cpu())
                                     },
                                     'step': global_step,
                                     'epoch': epoch,
@@ -269,7 +296,7 @@ def train_model(
                             except:
                                 pass
 
-        if save_checkpoint and epoch % 1 == 0:
+        if save_checkpoint and epoch % 100 == 0:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
             # state_dict['mask_values'] = dataset.mask_values
@@ -292,7 +319,7 @@ def get_args():
     parser.add_argument('--amp', action='store_true', default=False, help='Use mixed precision')
     parser.add_argument('--bilinear', action='store_true', default=False, help='Use bilinear upsampling')
     parser.add_argument('--classes', '-c', type=int, default=1, help='Number of classes')
-    parser.add_argument('--reg_loss_weight', '-rw', type=float, default=5.0, help='Weight of regression loss')
+    parser.add_argument('--reg_loss_weight', '-rw', type=float, default=1.0, help='Weight of regression loss')
     parser.add_argument('--use_depth','-ud', action='store_true', default=False, help='Use depth image')
 
     return parser.parse_args()
@@ -310,15 +337,24 @@ if __name__ == '__main__':
     # n_channels=4 for RGB-D images
     # n_classes is the number of probabilities you want to get per pixel
     if args.use_depth:
-        model = UNet(n_channels=4, n_classes=args.classes, bilinear=args.bilinear)
+        # model = UNet(n_channels=4, n_classes=args.classes, bilinear=args.bilinear)
+        # model = UnetResnet(n_classes=args.classes)
+        model = TwoHeadUnet(classes=args.classes,
+                            in_channels=4,
+                            head_config = "regression")
     else:
-        model = UNet(n_channels=3, n_classes=args.classes, bilinear=args.bilinear)
+        # model = UNet(n_channels=3, n_classes=args.classes, bilinear=args.bilinear)
+        # model = UnetResnet(n_classes=args.classes)
+        model = TwoHeadUnet(classes=args.classes,
+                            in_channels=3,
+                            head_config = "regression")
+        
     model = model.to(memory_format=torch.channels_last)
 
     logging.info(f'Network:\n'
                  f'\t{model.n_channels} input channels\n'
-                 f'\t{model.n_classes} output channels (classes)\n'
-                 f'\t{"Bilinear" if model.bilinear else "Transposed conv"} upscaling')
+                 f'\t{model.n_classes} output channels (classes)\n')
+                #  f'\t{"Bilinear" if model.bilinear else "Transposed conv"} upscaling')
 
     if args.load:
         state_dict = torch.load(args.load, map_location=device)
