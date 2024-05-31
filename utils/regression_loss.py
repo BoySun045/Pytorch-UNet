@@ -100,9 +100,6 @@ def weighted_huber_loss(input, target, binary_mask, delta=2.0, increase_factor=5
     # Calculate Huber loss
     huber_loss = criterion(input, target)
 
-    # Apply binary mask to consider errors only where binary_mask is 1
-    # masked_huber_loss = huber_loss * binary_mask
-
     # Apply weights
     weighted_huber_loss = huber_loss * weight_map
 

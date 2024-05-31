@@ -43,11 +43,11 @@ def evaluate(net, dataloader, device, amp, use_depth=False, only_depth=False, he
             elif head_mode == "regression":
                 mask_pred = net(image)
                 print("evaluation: regression mode")
-                reg_loss += loss_fn_rg(mask_pred, mask_true.float(), true_binary_mask.float(),increase_factor=5.0,avg_using_binary_mask=False)
+                reg_loss += loss_fn_rg(mask_pred, mask_true.float(), true_binary_mask.float(),increase_factor=1.0,avg_using_binary_mask=False)
             elif head_mode == "both":
                 binary_pred , mask_pred  = net(image)
                 dice_score += dice_coeff((F.sigmoid(binary_pred) > 0.5).float().squeeze(1), true_binary_mask, reduce_batch_first=False)
-                reg_loss += loss_fn_rg(mask_pred, mask_true.float(), true_binary_mask.float(),increase_factor=5.0,avg_using_binary_mask=False)
+                reg_loss += loss_fn_rg(mask_pred, mask_true.float(), true_binary_mask.float(),increase_factor=1.0,avg_using_binary_mask=False)
                 print("evaluation: both mode")
 
 
