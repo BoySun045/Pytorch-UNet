@@ -27,8 +27,8 @@ from torchvision.utils import save_image
 # dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/')
 # dir_debug = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/debug/')
 
-dir_path = Path("/media/boysun/Extreme Pro/Actmap_v2_mini")
-# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2")
+# dir_path = Path("/media/boysun/Extreme Pro/Actmap_v2_mini")
+dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2")
 # dir_path = Path("/media/boysun/Extreme Pro/one_image_dataset_3")
 dir_img = Path(dir_path / 'image/')
 dir_mask = Path(dir_path / 'weighted_mask/')
@@ -79,20 +79,22 @@ def train_model(
         momentum: float = 0.5,
         gradient_clipping: float = 1.0,
         use_depth: bool = False,
-        reg_loss_weight: float = 5.0,
+        reg_loss_weight: float = 1.0,
         head_mode: str = 'segmentation'
 ):
+    
     # 1. Create dataset
+    data_augmentation = True
     if use_depth:
         try:
-            dataset = CarvanaDataset(dir_img, dir_mask,dir_depth, img_scale, data_augmentation=False)
+            dataset = CarvanaDataset(dir_img, dir_mask,dir_depth, img_scale, data_augmentation=data_augmentation)
         except (AssertionError, RuntimeError, IndexError):
-            dataset = BasicDataset(dir_img, dir_mask, dir_depth, img_scale, data_augmentation=False)
+            dataset = BasicDataset(dir_img, dir_mask, dir_depth, img_scale, data_augmentation=data_augmentation)
     else:
         try:
-            dataset = CarvanaDataset(dir_img, dir_mask, None, img_scale, data_augmentation=False)
+            dataset = CarvanaDataset(dir_img, dir_mask, None, img_scale, data_augmentation=data_augmentation)
         except (AssertionError, RuntimeError, IndexError):
-            dataset = BasicDataset(dir_img, dir_mask, None,img_scale, data_augmentation=False)
+            dataset = BasicDataset(dir_img, dir_mask, None,img_scale, data_augmentation=data_augmentation)
 
     # 2. Split into train / validation partitions
     n_val = int(len(dataset) * val_percent)
@@ -101,7 +103,7 @@ def train_model(
     print(f"Train size: {n_train}, Validation size: {n_val}")
 
     # 3. Create data loaders
-    loader_args = dict(batch_size=batch_size, num_workers=16, pin_memory=True)
+    loader_args = dict(batch_size=batch_size, num_workers=64, pin_memory=True)
     train_loader = DataLoader(train_set, shuffle=True, **loader_args)
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
@@ -222,7 +224,7 @@ def train_model(
 
                 # Evaluation round
                 division_step = (n_train // (5 * batch_size))
-                division_step = 20
+                division_step = 100
                 if division_step > 0:
                     if global_step % division_step == 0:
                         histograms = {}
