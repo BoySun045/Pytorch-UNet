@@ -27,8 +27,9 @@ from torchvision.utils import save_image
 # dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/')
 # dir_debug = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/debug/')
 
-# dir_path = Path("/media/boysun/Extreme Pro/Actmap_v2_mini")
-dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2")
+dir_path = Path("/media/boysun/Extreme Pro/Actmap_v2_mini")
+# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2")
+# dir_path = Path("/media/boysun/Extreme Pro/one_image_dataset_3")
 dir_img = Path(dir_path / 'image/')
 dir_mask = Path(dir_path / 'weighted_mask/')
 dir_checkpoint = Path(dir_path / 'checkpoints/')
@@ -75,7 +76,7 @@ def train_model(
         img_scale: float = 0.5,
         amp: bool = False,
         weight_decay: float = 1e-8,
-        momentum: float = 0.9,
+        momentum: float = 0.5,
         gradient_clipping: float = 1.0,
         use_depth: bool = False,
         reg_loss_weight: float = 5.0,
@@ -84,14 +85,14 @@ def train_model(
     # 1. Create dataset
     if use_depth:
         try:
-            dataset = CarvanaDataset(dir_img, dir_mask,dir_depth, img_scale)
+            dataset = CarvanaDataset(dir_img, dir_mask,dir_depth, img_scale, data_augmentation=False)
         except (AssertionError, RuntimeError, IndexError):
-            dataset = BasicDataset(dir_img, dir_mask, dir_depth, img_scale)
+            dataset = BasicDataset(dir_img, dir_mask, dir_depth, img_scale, data_augmentation=False)
     else:
         try:
-            dataset = CarvanaDataset(dir_img, dir_mask, None, img_scale)
+            dataset = CarvanaDataset(dir_img, dir_mask, None, img_scale, data_augmentation=False)
         except (AssertionError, RuntimeError, IndexError):
-            dataset = BasicDataset(dir_img, dir_mask, None,img_scale)
+            dataset = BasicDataset(dir_img, dir_mask, None,img_scale, data_augmentation=False)
 
     # 2. Split into train / validation partitions
     n_val = int(len(dataset) * val_percent)
@@ -100,7 +101,7 @@ def train_model(
     print(f"Train size: {n_train}, Validation size: {n_val}")
 
     # 3. Create data loaders
-    loader_args = dict(batch_size=batch_size, num_workers=32, pin_memory=True)
+    loader_args = dict(batch_size=batch_size, num_workers=16, pin_memory=True)
     train_loader = DataLoader(train_set, shuffle=True, **loader_args)
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
@@ -147,9 +148,6 @@ def train_model(
         epoch_loss = 0
         with tqdm(total=n_train, desc=f'Epoch {epoch}/{epochs}', unit='img') as pbar:
             for batch_idx, batch in enumerate(train_loader):
-                # Save debug images for the first batch of each epoch
-                # if batch_idx == 0:
-                #     save_debug_images(batch, epoch, batch_idx, prefix='train')
 
                 true_masks, true_binary_masks = batch['mask'], batch['binary_mask']
 
@@ -178,14 +176,11 @@ def train_model(
                 true_masks = true_masks.to(device=device, dtype=torch.float32)
                 true_binary_masks = true_binary_masks.to(device=device, dtype=torch.float32)
 
-                # print("true mask max: ", true_masks.max())
-                # print("true mask min: ", true_masks.min())  
-
                 with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
 
                     if head_mode == 'both':
                         binary_pred, masks_pred = model(images)
-                        reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float(), true_binary_masks.float(), increase_factor=5.0, avg_using_binary_mask=False)
+                        reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float(), true_binary_masks.float(), increase_factor=8.0, avg_using_binary_mask=True)
                         class_loss = loss_fn_cl(binary_pred.squeeze(1), true_binary_masks.float())
                         class_loss += dice_loss(F.sigmoid(binary_pred.squeeze(1)), true_binary_masks.float(), multiclass=False)
                         class_loss = class_loss_weight * class_loss
@@ -202,7 +197,7 @@ def train_model(
                         
                     elif head_mode == 'regression':
                         masks_pred = model(images)
-                        reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float(), true_binary_masks.float(), increase_factor=5.0, avg_using_binary_mask=False)
+                        reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float(), true_binary_masks.float(), increase_factor=8.0, avg_using_binary_mask=False)
                         loss = reg_loss
 
                         class_loss = None
@@ -227,7 +222,7 @@ def train_model(
 
                 # Evaluation round
                 division_step = (n_train // (5 * batch_size))
-                division_step = 50
+                division_step = 20
                 if division_step > 0:
                     if global_step % division_step == 0:
                         histograms = {}
@@ -385,7 +380,8 @@ if __name__ == '__main__':
             amp=args.amp,
             use_depth=args.use_depth,
             reg_loss_weight=args.reg_loss_weight,
-            head_mode = head_mode
+            head_mode = head_mode,
+            weight_decay=1e-6
         )
     except torch.cuda.OutOfMemoryError:
         logging.error('Detected OutOfMemoryError! '
@@ -404,5 +400,6 @@ if __name__ == '__main__':
             amp=args.amp,
             use_depth=args.use_depth,
             reg_loss_weight=args.reg_loss_weight,
-            head_mode = head_mode
+            head_mode = head_mode,
+            weight_decay=1e-6
         )

@@ -11,7 +11,7 @@ from os.path import splitext, isfile, join
 from pathlib import Path
 from torch.utils.data import Dataset
 from tqdm import tqdm
-from utils.data_augmentation import get_transforms
+from utils.data_augmentation import get_transforms, get_static_transforms
 
 # def load_image(filename):
 #     ext = splitext(filename)[1]
@@ -39,7 +39,7 @@ def load_image(filename):
 
 
 class BasicDataset(Dataset):
-    def __init__(self, images_dir: str, mask_dir: str, depth_dir: str = None, scale: float = 1.0, mask_suffix: str = ''):
+    def __init__(self, images_dir: str, mask_dir: str, depth_dir: str = None, scale: float = 1.0, mask_suffix: str = '', data_augmentation=True):
         self.images_dir = Path(images_dir)
         self.mask_dir = Path(mask_dir)
         assert 0 < scale <= 1, 'Scale must be between 0 and 1'
@@ -60,7 +60,8 @@ class BasicDataset(Dataset):
         logging.info('Scanning mask files to determine unique values')
 
         # data augmentation
-        self.transforms = get_transforms()
+        self.transforms = get_transforms() if data_augmentation else get_static_transforms()
+        print("if do data augmentation: ", data_augmentation)
 
     def __len__(self):
         return len(self.ids)
@@ -188,40 +189,30 @@ class BasicDataset(Dataset):
         mask, binary_mask = self.preprocess(mask, self.scale, is_mask=True, is_depth=False)
 
         # data augmentation
-        # Transpose image and masks to (H, W, C)
-        img = np.transpose(img, (1, 2, 0))
-        mask = np.transpose(mask, (1, 2, 0)) if mask.ndim == 3 else mask[..., np.newaxis]
-        binary_mask = np.transpose(binary_mask, (1, 2, 0)) if binary_mask.ndim == 3 else binary_mask[..., np.newaxis]
-        
-        sample = {'image': img, 'mask': mask, 'binary_mask': binary_mask}
-        # print shape of img mask and binary_mask separately
-        # print(f"image shape: {img.shape}")
-        # print(f"mask shape: {mask.shape}")
-        # print(f"binary_mask shape: {binary_mask.shape}")
-        if self.depth_dir is not None:
-            sample['depth'] = depth
         if self.transforms:
+            img = np.transpose(img, (1, 2, 0))
+            mask = np.transpose(mask, (1, 2, 0)) if mask.ndim == 3 else mask[..., np.newaxis]
+            binary_mask = np.transpose(binary_mask, (1, 2, 0)) if binary_mask.ndim == 3 else binary_mask[..., np.newaxis]
+            
+            sample = {'image': img, 'mask': mask, 'binary_mask': binary_mask}
+
+            if self.depth_dir is not None:
+                sample['depth'] = depth
+            
             augmented = self.transforms(**sample)
             img = augmented['image']
             mask = augmented['mask']
             binary_mask = augmented['binary_mask']
+
             if self.depth_dir is not None:
                 depth = augmented['depth']
 
-        # print(f"image shape after data augmentation: {img.shape}")
-        # print(f"mask shape after data augmentation: {mask.shape}")
-        # print(f"binary_mask shape after data augmentation: {binary_mask.shape}")
+            # Transpose back to (C, H, W)
+            # print(img.shape, mask.shape, binary_mask.shape)
+            # img = np.transpose(img, (2, 0, 1)) 
+            mask = np.transpose(mask, (2, 0, 1)).squeeze() if mask.ndim == 3 else mask.squeeze(-1)
+            binary_mask = np.transpose(binary_mask, (2, 0, 1)).squeeze() if binary_mask.ndim == 3 else binary_mask.squeeze(-1)
 
-        # Transpose back to (C, H, W)
-        # img = np.transpose(img, (2, 0, 1)) 
-        mask = np.transpose(mask, (2, 0, 1)).squeeze() if mask.ndim == 3 else mask.squeeze(-1)
-        binary_mask = np.transpose(binary_mask, (2, 0, 1)).squeeze() if binary_mask.ndim == 3 else binary_mask.squeeze(-1)
-
-
-        # print their shape after data augmentation separately
-        # print(f"image shape after data augmentation: {img.shape}")
-        # print(f"mask shape after data augmentation: {mask.shape}")
-        # print(f"binary_mask shape after data augmentation: {binary_mask.shape}")
 
         assert img.shape[1:] == mask.shape, \
             f'Image and mask {name} should have the same height and width, but are {img.shape[1:]} and {mask.shape}'
@@ -243,5 +234,5 @@ class BasicDataset(Dataset):
 
 
 class CarvanaDataset(BasicDataset):
-    def __init__(self, images_dir, mask_dir, depth_dir, scale=1):
-        super().__init__(images_dir, mask_dir, depth_dir, scale, mask_suffix='')
+    def __init__(self, images_dir, mask_dir, depth_dir, scale=1, data_augmentation=True):
+        super().__init__(images_dir, mask_dir, depth_dir, scale, mask_suffix='', data_augmentation=data_augmentation)

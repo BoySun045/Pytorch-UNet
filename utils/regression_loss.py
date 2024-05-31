@@ -25,7 +25,7 @@ def mae_loss(input, target):
 
 #     return loss
 
-def weighted_mse_loss(input, target, binary_mask, increase_factor=2.0, avg_using_binary_mask=True):
+def weighted_mse_loss(input, target, binary_mask, increase_factor=1.0, avg_using_binary_mask=True):
     """
     Calculate MSE loss weighted by a binary mask, only considering errors where the mask is 1.
     
@@ -38,6 +38,15 @@ def weighted_mse_loss(input, target, binary_mask, increase_factor=2.0, avg_using
     Returns:
     - torch.Tensor: The calculated loss.
     """
+    # # squeeze the input and target tensors 
+    input = input.squeeze()
+    target = target.squeeze()
+    binary_mask = binary_mask.squeeze()
+    
+    if input.dim() == 4:
+        num_batches = input.shape[0]
+    else:
+        num_batches = 1    
 
     # Apply binary mask to increase weights only where binary_mask is 1
     weight_map = torch.ones_like(target)
@@ -53,11 +62,11 @@ def weighted_mse_loss(input, target, binary_mask, increase_factor=2.0, avg_using
     # Calculate squared error
     squared_error = (input - target) ** 2
 
-    # Apply binary mask to consider errors only where binary_mask is 1
-    masked_squared_error = squared_error * binary_mask
-
     # Apply weights
-    weighted_squared_error = masked_squared_error * weight_map
+    weighted_squared_error = squared_error * weight_map
+
+    # average the loss over batches
+    weighted_squared_error = weighted_squared_error/num_batches
 
     # Compute the mean loss over all pixels
     if avg_using_binary_mask:
@@ -66,9 +75,10 @@ def weighted_mse_loss(input, target, binary_mask, increase_factor=2.0, avg_using
         # use all pixels to calculate the average
         loss = weighted_squared_error.sum() / binary_mask.numel()
 
+    # print("loss: ", loss)
     return loss
 
-def weighted_huber_loss(input, target, binary_mask, delta=2.0, increase_factor=5.0, avg_using_binary_mask=True):
+def weighted_huber_loss(input, target, binary_mask, delta=0.5, increase_factor=5.0, avg_using_binary_mask=True):
     """
     Calculate Huber loss weighted by a binary mask, only considering errors where the mask is 1.
     
@@ -82,6 +92,16 @@ def weighted_huber_loss(input, target, binary_mask, delta=2.0, increase_factor=5
     Returns:
     - torch.Tensor: The calculated loss.
     """
+    # # squeeze the input and target tensors 
+    input = input.squeeze()
+    target = target.squeeze()
+    binary_mask = binary_mask.squeeze()
+    
+    if input.dim() == 4:
+        num_batches = input.shape[0]
+
+    else:
+        num_batches = 1    
 
     # Apply binary mask to increase weights only where binary_mask is 1
     weight_map = torch.ones_like(target)
@@ -91,8 +111,6 @@ def weighted_huber_loss(input, target, binary_mask, delta=2.0, increase_factor=5
 
     # check if the number of 0 values and 1 values in the binary mask sum up to the total number of pixels
     assert binary_mask.sum() + (binary_mask == 0).sum() == binary_mask.numel()
-    # print("number of 1 values in the binary mask: ", binary_mask.sum())
-    # print("number of 0 values in the binary mask: ", (binary_mask == 0).sum())
     
     # Instantiate Huber loss with specified delta
     criterion = nn.HuberLoss(delta=delta, reduction='none')
@@ -102,6 +120,9 @@ def weighted_huber_loss(input, target, binary_mask, delta=2.0, increase_factor=5
 
     # Apply weights
     weighted_huber_loss = huber_loss * weight_map
+
+    # average the loss over batches
+    weighted_huber_loss = weighted_huber_loss/num_batches
 
     # Compute the mean loss over all pixels
     if avg_using_binary_mask:

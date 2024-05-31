@@ -9,6 +9,13 @@ from segmentation_models_pytorch.base.modules import Activation
 from segmentation_models_pytorch.base import initialization as init
 
 
+class ScaledTanh(nn.Module):
+    def __init__(self):
+        super(ScaledTanh, self).__init__()
+
+    def forward(self, x):
+        return 0.5 * (torch.tanh(x) + 1.0)
+    
 class PredictionModel(torch.nn.Module):
     def initialize(self,head_config):
         init.initialize_decoder(self.decoder)
@@ -37,7 +44,7 @@ class PredictionModel(torch.nn.Module):
     def forward(self, x):
         """Sequentially pass `x` trough model`s encoder, decoder and heads"""
 
-        # self.check_input_shape(x)
+        self.check_input_shape(x)
 
         # do the padding if needed
         h, w = x.shape[-2:]
@@ -101,7 +108,7 @@ class RegressionHead(nn.Sequential):
     def __init__(self, in_channels, out_channels, kernel_size=3, activation=None, upsampling=1):
         conv2d = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, padding=kernel_size // 2)
         upsampling = nn.UpsamplingBilinear2d(scale_factor=upsampling) if upsampling > 1 else nn.Identity()
-        activation = nn.ReLU(inplace=True)
+        activation = ScaledTanh()
         super().__init__(conv2d, upsampling, activation)
 
 

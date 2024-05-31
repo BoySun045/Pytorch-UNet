@@ -1,5 +1,6 @@
 import torch
 import torch.nn.functional as F
+import torch.nn as nn
 from tqdm import tqdm
 
 from utils.regression_loss import mse_loss, mae_loss, weighted_mse_loss
@@ -12,6 +13,8 @@ def evaluate(net, dataloader, device, amp, use_depth=False, only_depth=False, he
     num_val_batches = len(dataloader)
 
     loss_fn_rg = weighted_mse_loss
+    # loss_fn_rg_torch = nn.MSELoss()
+    # reg_loss_torch = 0
     dice_score = 0
     reg_loss = 0
 
@@ -44,12 +47,19 @@ def evaluate(net, dataloader, device, amp, use_depth=False, only_depth=False, he
                 mask_pred = net(image)
                 print("evaluation: regression mode")
                 reg_loss += loss_fn_rg(mask_pred, mask_true.float(), true_binary_mask.float(),increase_factor=1.0,avg_using_binary_mask=False)
+                # reg_loss_torch += loss_fn_rg_torch(mask_pred, mask_true.float())
+                print("reg loss loss_fn_rg: ", reg_loss)
+                # print("reg loss torch: ", reg_loss_torch)
+
             elif head_mode == "both":
                 binary_pred , mask_pred  = net(image)
                 dice_score += dice_coeff((F.sigmoid(binary_pred) > 0.5).float().squeeze(1), true_binary_mask, reduce_batch_first=False)
                 reg_loss += loss_fn_rg(mask_pred, mask_true.float(), true_binary_mask.float(),increase_factor=1.0,avg_using_binary_mask=False)
                 print("evaluation: both mode")
-
+            
 
     net.train()
+    # print("final loss: ", reg_loss)
+    # print("final loss torch: ", reg_loss_torch)
+    # print("num val batches: ", num_val_batches)
     return dice_score / max(num_val_batches, 1) if dice_score != 0 else 0, reg_loss / max(num_val_batches, 1) if reg_loss != 0 else 0
