@@ -9,6 +9,8 @@ from .unet_parts_v2 import (
     SegmentationHead
 )
 import torch.nn as nn
+import torch 
+
 
 class TwoHeadUnet(PredictionModel):
     """Unet_ is a fully convolution neural network for image semantic segmentation. Consist of *encoder*
@@ -76,6 +78,10 @@ class TwoHeadUnet(PredictionModel):
             weights=encoder_weights,
         )
 
+        if in_channels == 4:
+            # Modify the first convolutional layer to accept 4 channels
+            self.encoder.conv1 = self.modify_first_conv(self.encoder.conv1, in_channels)
+
         self.decoder = UnetDecoder(
             encoder_channels=self.encoder.out_channels,
             decoder_channels=decoder_channels,
@@ -127,3 +133,25 @@ class TwoHeadUnet(PredictionModel):
         self.output_stride = 32
         self.n_classes = classes
         self.n_channels = in_channels
+
+
+    @staticmethod
+    def modify_first_conv(conv_layer, in_channels):
+        if in_channels == conv_layer.in_channels:
+            return conv_layer
+        else:
+            new_conv = nn.Conv2d(in_channels, conv_layer.out_channels, 
+                                kernel_size=conv_layer.kernel_size, 
+                                stride=conv_layer.stride, 
+                                padding=conv_layer.padding, 
+                                bias=(conv_layer.bias is not None))
+            
+            if in_channels < conv_layer.in_channels:
+                # If new in_channels are less than the original, we slice the weights
+                new_conv.weight.data = conv_layer.weight.data[:, :in_channels, :, :]
+            else:
+                # If new in_channels are more than the original, we repeat the weights
+                new_conv.weight.data[:, :conv_layer.in_channels, :, :] = conv_layer.weight.data
+                new_conv.weight.data[:, conv_layer.in_channels:, :, :] = conv_layer.weight.data[:, :in_channels - conv_layer.in_channels, :, :]
+
+            return new_conv

@@ -27,8 +27,8 @@ from torchvision.utils import save_image
 # dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/')
 # dir_debug = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/debug/')
 
-# dir_path = Path("/media/boysun/Extreme Pro/Actmap_v2_mini")
-dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2")
+dir_path = Path("/media/boysun/Extreme Pro/Actmap_v2_mini")
+# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2")
 # dir_path = Path("/media/boysun/Extreme Pro/one_image_dataset_3")
 dir_img = Path(dir_path / 'image/')
 dir_mask = Path(dir_path / 'weighted_mask/')
@@ -84,7 +84,7 @@ def train_model(
 ):
     
     # 1. Create dataset
-    data_augmentation = True
+    data_augmentation = False
     if use_depth:
         try:
             dataset = CarvanaDataset(dir_img, dir_mask,dir_depth, img_scale, data_augmentation=data_augmentation)
@@ -103,7 +103,7 @@ def train_model(
     print(f"Train size: {n_train}, Validation size: {n_val}")
 
     # 3. Create data loaders
-    loader_args = dict(batch_size=batch_size, num_workers=64, pin_memory=True)
+    loader_args = dict(batch_size=batch_size, num_workers=16, pin_memory=True)
     train_loader = DataLoader(train_set, shuffle=True, **loader_args)
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
@@ -302,7 +302,7 @@ def train_model(
                             except:
                                 pass
 
-        if save_checkpoint and epoch % 100 == 0:
+        if save_checkpoint and epoch % 10 == 0:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
             # state_dict['mask_values'] = dataset.mask_values

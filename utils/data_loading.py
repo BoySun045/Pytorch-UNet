@@ -197,6 +197,7 @@ class BasicDataset(Dataset):
             sample = {'image': img, 'mask': mask, 'binary_mask': binary_mask}
 
             if self.depth_dir is not None:
+                depth = np.transpose(depth, (1, 2, 0)) if depth.ndim == 3 else depth[..., np.newaxis]
                 sample['depth'] = depth
             
             augmented = self.transforms(**sample)

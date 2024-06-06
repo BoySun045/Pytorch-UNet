@@ -5,8 +5,8 @@ import numpy as np
 from tqdm import tqdm
 from matplotlib import pyplot as plt
 
-dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")
-# dir_path = Path("/media/boysun/Extreme Pro/Actmap_v2_mini")
+# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")
+dir_path = Path("/media/boysun/Extreme Pro/Actmap_v3")
 dir_img = Path(dir_path / 'image/')
 dir_mask = Path(dir_path / 'weighted_mask/')
 dir_checkpoint = Path(dir_path / 'checkpoints/')
