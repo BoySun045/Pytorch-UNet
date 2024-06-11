@@ -1,8 +1,0 @@
-Traceback (most recent call last):
-  File "/cluster/project/cvg/boysun/Pytorch-UNet/train.py", line 18, in <module>
-    from unet import UNet, UnetResnet, TwoHeadUnet
-  File "/cluster/project/cvg/boysun/Pytorch-UNet/unet/__init__.py", line 2, in <module>
-    from .unet_resnet import UnetResnet
-  File "/cluster/project/cvg/boysun/Pytorch-UNet/unet/unet_resnet.py", line 4, in <module>
-    import segmentation_models_pytorch as smp
-ModuleNotFoundError: No module named 'segmentation_models_pytorch'

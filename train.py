@@ -14,6 +14,9 @@ from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
 
 import wandb
+import matplotlib.pyplot as plt
+import numpy as np
+
 from evaluate import evaluate
 from unet import UNet, UnetResnet, TwoHeadUnet
 from utils.data_loading import BasicDataset, CarvanaDataset
@@ -22,14 +25,9 @@ from utils.regression_loss import mse_loss, weighted_mse_loss, mae_loss, weighte
 from torchvision.utils import save_image
 import datetime 
 
-# dir_img = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/image/')
-# dir_mask = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/mask/')
-# dir_depth = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/depth/')
-# dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/')
-# dir_debug = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/debug/')
 
-# dir_path = Path("/media/boysun/Extreme Pro/Actmap_v2_mini")
-dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")
+dir_path = Path("/media/boysun/Extreme Pro/Actmap_v2_mini")
+# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")
 # dir_path = Path("/media/boysun/Extreme Pro/one_image_dataset_3")
 dir_img = Path(dir_path / 'image/')
 dir_mask = Path(dir_path / 'weighted_mask/')
@@ -69,6 +67,83 @@ def save_debug_images(batch, epoch, batch_idx, prefix='train', num_images=5):
             save_image(depths[i], depth_path)
 
 
+def plot_images(wandb_rgb, wandb_depth, true_masks, true_binary_masks, wandb_mask_pred, binary_mask, error_map, use_depth):
+    fig, axes = plt.subplots(2, 5 if use_depth else 4, figsize=(20, 8))
+    
+    # RGB image
+    axes[0, 0].imshow(np.transpose(wandb_rgb[0].cpu().detach().numpy(), (1, 2, 0)))
+    axes[0, 0].set_title('RGB Image')
+    axes[0, 0].axis('off')
+
+    # Depth image (if applicable)
+    if use_depth:
+        axes[0, 1].imshow(wandb_depth[0].cpu().detach().numpy(), cmap='gray')
+        axes[0, 1].set_title('Depth Image')
+        axes[0, 1].axis('off')
+        
+        # Adjust indices for subsequent images
+        idx_offset = 1
+    else:
+        idx_offset = 0
+
+    # True mask as heatmap
+    axes[0, idx_offset + 1].imshow(true_masks[0].cpu().detach().numpy(), cmap='viridis')
+    axes[0, idx_offset + 1].set_title('True Mask (Heatmap)')
+    axes[0, idx_offset + 1].axis('off')
+
+    # True binary mask
+    axes[0, idx_offset + 2].imshow(true_binary_masks[0].cpu().detach().numpy(), cmap='gray')
+    axes[0, idx_offset + 2].set_title('True Binary Mask')
+    axes[0, idx_offset + 2].axis('off')
+
+    # Predicted mask as heatmap
+    axes[0, idx_offset + 3].imshow(wandb_mask_pred[0].cpu().detach().numpy(), cmap='viridis')
+    axes[0, idx_offset + 3].set_title('Predicted Mask (Heatmap)')
+    axes[0, idx_offset + 3].axis('off')
+
+    # Error map as heatmap
+    axes[1, 0].imshow(error_map[0].cpu().detach().numpy(), cmap='viridis')
+    axes[1, 0].set_title('Error Map (Heatmap)')
+    axes[1, 0].axis('off')
+
+    # Predicted binary mask
+    axes[1, 1].imshow(binary_mask[0].cpu().detach().numpy(), cmap='gray')
+    axes[1, 1].set_title('Predicted Binary Mask')
+    axes[1, 1].axis('off')
+
+    # Remove any empty axes
+    for i in range(2, 5 if use_depth else 4):
+        fig.delaxes(axes[1, i])
+
+    # Convert plot to an image
+    fig.canvas.draw()
+    img_array = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+    img_array = img_array.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+    
+    plt.close(fig)
+    
+    return img_array
+
+def log_images(experiment, optimizer, val_score_cl, val_score_rg, wandb_rgb, wandb_depth, true_masks, true_binary_masks, wandb_mask_pred, binary_mask, global_step, epoch, histograms, use_depth):
+
+    # Calculate the error map
+    error_map = torch.abs(true_masks - wandb_mask_pred).cpu().detach()
+    combined_image = plot_images(wandb_rgb, wandb_depth, true_masks, true_binary_masks, wandb_mask_pred, binary_mask, error_map, use_depth)
+    
+    try:
+        experiment.log({
+            'learning rate': optimizer.param_groups[0]['lr'],
+            'validation avg score classification': val_score_cl,
+            'validation avg score regression': val_score_rg,
+            'combined images': wandb.Image(combined_image),
+            'step': global_step,
+            'epoch': epoch,
+            **histograms
+        })
+    except Exception as e:
+        print(f"Failed to log to Weights and Biases: {e}")
+
+        
 def train_model(
         model,
         device,
@@ -85,22 +160,25 @@ def train_model(
         use_depth: bool = False,
         reg_loss_weight: float = 1.0,
         head_mode: str = 'segmentation',
-        dataset_portion: float = 0.5,
+        dataset_portion: float = 1.0,
         lr_decay: bool = True,
-        reg_loss_type = 'huber'
+        reg_loss_type = 'huber',
+        reg_loss_cal_inmask = True,
+        log_transform = True
 ):
     # 1. Create dataset
     data_augmentation = True
+    log_transform = log_transform
     if use_depth:
         try:
-            dataset = CarvanaDataset(dir_img, dir_mask,dir_depth, img_scale, data_augmentation=data_augmentation)
+            dataset = CarvanaDataset(dir_img, dir_mask,dir_depth, img_scale, data_augmentation=data_augmentation, log_transform=log_transform)
         except (AssertionError, RuntimeError, IndexError):
-            dataset = BasicDataset(dir_img, dir_mask, dir_depth, img_scale, data_augmentation=data_augmentation)
+            dataset = BasicDataset(dir_img, dir_mask, dir_depth, img_scale, data_augmentation=data_augmentation, log_transform=log_transform)
     else:
         try:
-            dataset = CarvanaDataset(dir_img, dir_mask, None, img_scale, data_augmentation=data_augmentation)
+            dataset = CarvanaDataset(dir_img, dir_mask, None, img_scale, data_augmentation=data_augmentation, log_transform=log_transform)
         except (AssertionError, RuntimeError, IndexError):
-            dataset = BasicDataset(dir_img, dir_mask, None,img_scale, data_augmentation=data_augmentation)
+            dataset = BasicDataset(dir_img, dir_mask, None,img_scale, data_augmentation=data_augmentation, log_transform=log_transform)
 
     # 2. Subset the dataset
     total_size = int(len(dataset) * dataset_portion)
@@ -113,12 +191,12 @@ def train_model(
     print(f"Train size: {n_train}, Validation size: {n_val}")
 
     # 4. Create data loaders
-    loader_args = dict(batch_size=batch_size, num_workers=32, pin_memory=True)
+    loader_args = dict(batch_size=batch_size, num_workers=16, pin_memory=True)
     train_loader = DataLoader(train_set, shuffle=True, **loader_args)
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
     # (Initialize logging)
-    experiment = wandb.init(project='U-Net-resnet', resume='allow', anonymous='must')
+    experiment = wandb.init(project='U-Net-resnet-v2', resume='allow', anonymous='must')
     experiment.config.update(
         dict(epochs=epochs, 
              batch_size=batch_size, 
@@ -132,7 +210,9 @@ def train_model(
              img_scale=img_scale,
              regloss_weight = reg_loss_weight,
              lr_decay = lr_decay,
-             regression_loss_fn = reg_loss_type, 
+             regression_loss_fn = reg_loss_type,
+             regression_loss_cal_inmask = reg_loss_cal_inmask,
+             log_transform = log_transform, 
              amp=amp)
     )
 
@@ -179,7 +259,7 @@ def train_model(
         model.train()
         epoch_loss = 0
         with tqdm(total=n_train, desc=f'Epoch {epoch}/{epochs}', unit='img') as pbar:
-            for batch_idx, batch in enumerate(train_loader):
+            for _, batch in enumerate(train_loader):
 
                 true_masks, true_binary_masks = batch['mask'], batch['binary_mask']
 
@@ -212,7 +292,7 @@ def train_model(
 
                     if head_mode == 'both':
                         binary_pred, masks_pred = model(images)
-                        reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float(), true_binary_masks.float(), increase_factor=5.0, avg_using_binary_mask=True)
+                        reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float(), true_binary_masks.float(), increase_factor=5.0, avg_using_binary_mask=reg_loss_cal_inmask)
                         class_loss = loss_fn_cl(binary_pred.squeeze(1), true_binary_masks.float())
                         class_loss += dice_loss(F.sigmoid(binary_pred.squeeze(1)), true_binary_masks.float(), multiclass=False)
                         class_loss = class_loss_weight * class_loss
@@ -253,86 +333,53 @@ def train_model(
                 pbar.set_postfix(**{'loss (batch)': loss.item()})
 
                 # Evaluation round
-                division_step = (n_train // (5 * batch_size))
+                # division_step = (n_train // (5 * batch_size))
                 division_step = 100
-                if division_step > 0:
-                    if global_step % division_step == 0:
-                        histograms = {}
-                        for tag, value in model.named_parameters():
-                            tag = tag.replace('/', '.')
-                            if not (torch.isinf(value) | torch.isnan(value)).any():
-                                histograms['Weights/' + tag] = wandb.Histogram(value.data.cpu())
-                            if not (torch.isinf(value.grad) | torch.isnan(value.grad)).any():
-                                histograms['Gradients/' + tag] = wandb.Histogram(value.grad.data.cpu())
+                if division_step > 0 and global_step % division_step == 0:
+                    histograms = {}
+                    for tag, value in model.named_parameters():
+                        tag = tag.replace('/', '.')
+                        if not (torch.isinf(value) | torch.isnan(value)).any():
+                            histograms['Weights/' + tag] = wandb.Histogram(value.data.cpu())
+                        if not (torch.isinf(value.grad) | torch.isnan(value.grad)).any():
+                            histograms['Gradients/' + tag] = wandb.Histogram(value.grad.data.cpu())
 
-                        val_score_cl, val_score_rg = evaluate(model, val_loader, device, amp, use_depth=use_depth, head_mode = head_mode)
+                    val_score_cl, val_score_rg = evaluate(model, val_loader, device, amp, use_depth=use_depth, head_mode = head_mode)
 
-                        if head_mode == 'both':
-                            scheduler.step(val_score_cl - val_score_rg)
-                            binary_mask = F.sigmoid(binary_pred.squeeze(1)) > 0.5
-                            wandb_mask_pred = masks_pred.squeeze(1) * (F.sigmoid(binary_pred.squeeze(1))> 0.5)
+                    if head_mode == 'both':
+                        scheduler.step(val_score_cl - val_score_rg)
+                        binary_mask = F.sigmoid(binary_pred.squeeze(1)) > 0.5
+                        wandb_mask_pred = masks_pred.squeeze(1) * (F.sigmoid(binary_pred.squeeze(1))> 0.5)
 
-                        elif head_mode == 'segmentation':
-                            scheduler.step(1 - val_score_cl)
-                            binary_mask = F.sigmoid(binary_pred.squeeze(1)) > 0.5
-                            # masks_pred does not exist in this case, put a dummy tensor
-                            masks_pred = torch.zeros_like(true_masks)
-                            wandb_mask_pred = masks_pred.squeeze(1) * (F.sigmoid(binary_pred.squeeze(1))> 0.5)
+                    elif head_mode == 'segmentation':
+                        scheduler.step(1 - val_score_cl)
+                        binary_mask = F.sigmoid(binary_pred.squeeze(1)) > 0.5
+                        # masks_pred does not exist in this case, put a dummy tensor
+                        masks_pred = torch.zeros_like(true_masks)
+                        wandb_mask_pred = masks_pred.squeeze(1) * (F.sigmoid(binary_pred.squeeze(1))> 0.5)
 
-                        elif head_mode == 'regression':
-                            scheduler.step(1 - val_score_rg)
-                            wandb_mask_pred = masks_pred.squeeze(1)
-                            # binary_mask does not exist in this case, put a dummy tensor
-                            binary_mask = torch.zeros_like(true_masks)
+                    elif head_mode == 'regression':
+                        scheduler.step(1 - val_score_rg)
+                        wandb_mask_pred = masks_pred.squeeze(1)
+                        # binary_mask does not exist in this case, put a dummy tensor
+                        binary_mask = torch.zeros_like(true_masks)
 
-                        logging.info(f'Validation Classification Dice score: {val_score_cl}')
-                        logging.info(f'Validation Regression mse : {val_score_rg}')
+                    logging.info(f'Validation Classification Dice score: {val_score_cl}')
+                    logging.info(f'Validation Regression mse : {val_score_rg}')
 
-                        # since image could be 4 channels, we need to convert it to 3 channels to get the rgb image
-                        wandb_rgb = images[:, :3, :, :]
-                        if use_depth:
-                            # depth is the last channel
-                            wandb_depth = images[:, -1, :, :]
-                            try:      
-                                experiment.log({
-                                    'learning rate': optimizer.param_groups[0]['lr'],
-                                    'validation avg score classification': val_score_cl,
-                                    'validation avg score regression': val_score_rg,
-                                    'images': wandb.Image(wandb_rgb[0].cpu()),
-                                    'depth': wandb.Image(wandb_depth[0].cpu()),
-                                    'masks': {
-                                        'true': wandb.Image(true_masks[0].float().cpu()),
-                                        'true_binary': wandb.Image(true_binary_masks[0].float().cpu()),
-                                        'pred': wandb.Image(wandb_mask_pred[0].float().cpu()),
-                                        'pred_binary': wandb.Image(binary_mask[0].float().cpu())
-                                    },
-                                    'step': global_step,
-                                    'epoch': epoch,
-                                    **histograms
-                                })
-                            except:
-                                pass
-                        else:
-                            try:
-                                experiment.log({
-                                    'learning rate': optimizer.param_groups[0]['lr'],
-                                    'validation avg score classification': val_score_cl,
-                                    'validation avg score regression': val_score_rg,
-                                    'images': wandb.Image(wandb_rgb[0].cpu()),
-                                    'masks': {
-                                        'true': wandb.Image(true_masks[0].float().cpu()),
-                                        'true_binary': wandb.Image(true_binary_masks[0].float().cpu()),
-                                        'pred': wandb.Image(wandb_mask_pred[0].float().cpu()),
-                                        'pred_binary': wandb.Image(binary_mask[0].float().cpu())
-                                    },
-                                    'step': global_step,
-                                    'epoch': epoch,
-                                    **histograms
-                                })
-                            except:
-                                pass
+                    # since image could be 4 channels, we need to convert it to 3 channels to get the rgb image
+                    wandb_rgb = images[:, :3, :, :]
+                    wandb_depth = images[:, -1, :, :] if use_depth else None # depth is the last channel
+        
+                    log_images(experiment, optimizer, 
+                               val_score_cl, val_score_rg, 
+                               wandb_rgb, wandb_depth,
+                               true_masks, true_binary_masks, 
+                               wandb_mask_pred, binary_mask, 
+                               global_step, epoch, histograms, use_depth)
 
-        if save_checkpoint and epoch % 1 == 0:
+
+        if save_checkpoint and epoch % 100 == 0:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
             # state_dict['mask_values'] = dataset.mask_values

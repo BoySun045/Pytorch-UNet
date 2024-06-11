@@ -13,17 +13,6 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 from utils.data_augmentation import get_transforms, get_static_transforms
 
-# def load_image(filename):
-#     ext = splitext(filename)[1]
-#     if ext == '.npy':
-#         return Image.fromarray(np.load(filename))
-#     elif ext == '.npz':
-#         return Image.fromarray(np.load(filename)['depth'])
-#     elif ext in ['.pt', '.pth']:
-#         return Image.fromarray(torch.load(filename).numpy())
-#     else:
-#         return Image.open(filename)
-
 def load_image(filename):
     ext = splitext(filename)[1]
     if ext == '.npy':
@@ -36,13 +25,12 @@ def load_image(filename):
     else:
         return Image.open(filename)
 
-
 # Log transformation
-def log_transform(y):
+def log_transform_mask(y):
     return np.log1p(y)  # log1p(x) = log(1 + x)
 
 # Reverse log transformation
-def reverse_log_transform(y):
+def reverse_log_transform_mask(y):
     return np.expm1(y)  # expm1(x) = exp(x) - 1
 
 def min_max_scale(y, min_val, max_val):
@@ -52,7 +40,7 @@ def reverse_min_max_scale(y, min_val, max_val):
     return y * (max_val - min_val) + min_val
 
 class BasicDataset(Dataset):
-    def __init__(self, images_dir: str, mask_dir: str, depth_dir: str = None, scale: float = 1.0, mask_suffix: str = '', data_augmentation=True):
+    def __init__(self, images_dir: str, mask_dir: str, depth_dir: str = None, scale: float = 1.0, mask_suffix: str = '', data_augmentation=True, log_transform=True):
         self.images_dir = Path(images_dir)
         self.mask_dir = Path(mask_dir)
         assert 0 < scale <= 1, 'Scale must be between 0 and 1'
@@ -76,58 +64,14 @@ class BasicDataset(Dataset):
         self.transforms = get_transforms() if data_augmentation else get_static_transforms()
         print("if do data augmentation: ", data_augmentation)
 
+        # 
+        self.log_transform = log_transform
+
     def __len__(self):
         return len(self.ids)
 
-    # @staticmethod
-    # def preprocess(mask_values, pil_img, scale, is_mask, is_depth):
-    #     w, h = pil_img.size
-    #     newW, newH = int(scale * w), int(scale * h)
-    #     assert newW > 0 and newH > 0, 'Scale is too small, resized images would have no pixel'
-    #     pil_img = pil_img.resize((newW, newH), resample=Image.NEAREST if is_mask else Image.BICUBIC)
-    #     img = np.asarray(pil_img)
-
-    #     if is_mask:
-    #         mask = np.zeros((newH, newW), dtype=np.int64)
-    #         for i, v in enumerate(mask_values):
-    #             if img.ndim == 2:
-    #                 mask[img == v] = i
-    #             else:
-    #                 mask[(img == v).all(-1)] = i
-
-    #         return mask
-
-    #     if not is_depth:
-    #         if img.ndim == 2:
-    #             img = img[np.newaxis, ...]
-    #         else:
-    #             img = img.transpose((2, 0, 1))
-
-    #         if (img > 1).any():
-    #             img = img / 255.0
-
-    #         return img
-        
-    #     if is_depth:
-    #         if img.ndim == 2:
-    #             img = img[np.newaxis, ...]
-    #         else:
-    #             img = img.transpose((2, 0, 1))
-
-    #         # depth should be with only one channel
-    #         if not img.shape[0] == 1:
-    #             # make it with only one channel but keep the same dimension (1, H, W)
-    #             img = img[0:1, ...]
-
-    #         # normalize depth 
-    #         img_min = img.min()
-    #         img_max = img.max()
-    #         img = (img - img_min) / (img_max - img_min)
-
-    #         return img
-
     @staticmethod
-    def preprocess(pil_img, scale, is_mask, is_depth=False):
+    def preprocess(pil_img, scale, is_mask, is_depth=False, log_transform=True):
 
         if is_mask:
             # if it is mask, the input is directly a np array with weights value 
@@ -135,16 +79,21 @@ class BasicDataset(Dataset):
             mask = np.array(pil_img)
             mask = np.array(Image.fromarray(mask).resize((int(mask.shape[1] * scale), int(mask.shape[0] * scale),), resample=Image.NEAREST))
 
-            mask_weight_global_max = 3000
+            mask_weight_global_max = 3000.0
             mask_weight_global_min = 1.0
-            mask = np.clip(mask, mask_weight_global_min, mask_weight_global_max)
             
-            mask_log = log_transform(mask)
-            mask_log_max = np.log1p(mask_weight_global_max)
-            mask_log_min = np.log1p(mask_weight_global_min)
+            if log_transform:
+                mask = np.clip(mask, mask_weight_global_min, mask_weight_global_max)
+                mask_log = log_transform_mask(mask)
+                mask_log_max = np.log1p(mask_weight_global_max)
+                mask_log_min = np.log1p(mask_weight_global_min)
+                mask = min_max_scale(mask_log, mask_log_min, mask_log_max)
+                mask = np.clip(mask, 0, 1)
             
-            mask = min_max_scale(mask_log, mask_log_min, mask_log_max)
-            mask = np.clip(mask, 0, 1)
+            else:
+                mask = np.clip(mask, mask_weight_global_min, mask_weight_global_max)
+                mask = min_max_scale(mask, mask_weight_global_min, mask_weight_global_max)
+                mask = np.clip(mask, 0, 1)
 
             binary_mask = (mask > 0.0001).astype(np.int64)
             return mask, binary_mask
@@ -208,7 +157,7 @@ class BasicDataset(Dataset):
         #     f'Image and mask {name} should be the same size, but are {img.size} and {mask.size}'
 
         img = self.preprocess( img, self.scale, is_mask=False, is_depth=False)
-        mask, binary_mask = self.preprocess(mask, self.scale, is_mask=True, is_depth=False)
+        mask, binary_mask = self.preprocess(mask, self.scale, is_mask=True, is_depth=False, log_transform=self.log_transform)
 
         # data augmentation
         if self.transforms:
@@ -257,5 +206,5 @@ class BasicDataset(Dataset):
 
 
 class CarvanaDataset(BasicDataset):
-    def __init__(self, images_dir, mask_dir, depth_dir, scale=1, data_augmentation=True):
-        super().__init__(images_dir, mask_dir, depth_dir, scale, mask_suffix='', data_augmentation=data_augmentation)
+    def __init__(self, images_dir, mask_dir, depth_dir, scale=1, data_augmentation=True, log_transform=True):
+        super().__init__(images_dir, mask_dir, depth_dir, scale, mask_suffix='', data_augmentation=data_augmentation, log_transform=log_transform)
