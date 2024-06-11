@@ -18,8 +18,9 @@ from evaluate import evaluate
 from unet import UNet, UnetResnet, TwoHeadUnet
 from utils.data_loading import BasicDataset, CarvanaDataset
 from utils.dice_score import dice_loss
-from utils.regression_loss import mse_loss, weighted_mse_loss, mae_loss, weighted_huber_loss
+from utils.regression_loss import mse_loss, weighted_mse_loss, mae_loss, weighted_huber_loss, weighted_l1_inverse_loss
 from torchvision.utils import save_image
+import datetime 
 
 # dir_img = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/image/')
 # dir_mask = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/mask/')
@@ -27,12 +28,15 @@ from torchvision.utils import save_image
 # dir_checkpoint = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/')
 # dir_debug = Path('/cluster/project/cvg/boysun/MH3D_train_set_mini/debug/')
 
-dir_path = Path("/media/boysun/Extreme Pro/Actmap_v2_mini")
-# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2")
+# dir_path = Path("/media/boysun/Extreme Pro/Actmap_v2_mini")
+dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")
 # dir_path = Path("/media/boysun/Extreme Pro/one_image_dataset_3")
 dir_img = Path(dir_path / 'image/')
 dir_mask = Path(dir_path / 'weighted_mask/')
-dir_checkpoint = Path(dir_path / 'checkpoints/')
+# dir_checkpoint = Path(dir_path / 'checkpoints/')
+# get the current time
+dir_checkpoint = Path(dir_path / 'checkpoints' / datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+# dir_checkpoint = Path('/cluster/scratch/boysun/checkpoints/')
 dir_debug = Path(dir_path / 'debug/')
 dir_depth = Path(dir_path / 'depth/')
 
@@ -76,15 +80,17 @@ def train_model(
         img_scale: float = 0.5,
         amp: bool = False,
         weight_decay: float = 1e-8,
-        momentum: float = 0.5,
+        momentum: float = 0.95,
         gradient_clipping: float = 1.0,
         use_depth: bool = False,
         reg_loss_weight: float = 1.0,
-        head_mode: str = 'segmentation'
+        head_mode: str = 'segmentation',
+        dataset_portion: float = 0.5,
+        lr_decay: bool = True,
+        reg_loss_type = 'huber'
 ):
-    
     # 1. Create dataset
-    data_augmentation = False
+    data_augmentation = True
     if use_depth:
         try:
             dataset = CarvanaDataset(dir_img, dir_mask,dir_depth, img_scale, data_augmentation=data_augmentation)
@@ -96,22 +102,38 @@ def train_model(
         except (AssertionError, RuntimeError, IndexError):
             dataset = BasicDataset(dir_img, dir_mask, None,img_scale, data_augmentation=data_augmentation)
 
-    # 2. Split into train / validation partitions
-    n_val = int(len(dataset) * val_percent)
-    n_train = len(dataset) - n_val
+    # 2. Subset the dataset
+    total_size = int(len(dataset) * dataset_portion)
+    dataset, _ = random_split(dataset, [total_size, len(dataset) - total_size], generator=torch.Generator().manual_seed(0))
+
+    # 3. Split into train / validation partitions
+    n_val = int(total_size * val_percent)
+    n_train = total_size - n_val
     train_set, val_set = random_split(dataset, [n_train, n_val], generator=torch.Generator().manual_seed(0))
     print(f"Train size: {n_train}, Validation size: {n_val}")
 
-    # 3. Create data loaders
-    loader_args = dict(batch_size=batch_size, num_workers=16, pin_memory=True)
+    # 4. Create data loaders
+    loader_args = dict(batch_size=batch_size, num_workers=32, pin_memory=True)
     train_loader = DataLoader(train_set, shuffle=True, **loader_args)
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
     # (Initialize logging)
     experiment = wandb.init(project='U-Net-resnet', resume='allow', anonymous='must')
     experiment.config.update(
-        dict(epochs=epochs, batch_size=batch_size, learning_rate=learning_rate,
-             val_percent=val_percent, save_checkpoint=save_checkpoint, img_scale=img_scale, amp=amp)
+        dict(epochs=epochs, 
+             batch_size=batch_size, 
+             learning_rate=learning_rate,
+             val_percent=val_percent, 
+             save_checkpoint=save_checkpoint,
+             trainer_momentum=momentum,
+             dataset_portion=dataset_portion,
+             do_data_augmentation=data_augmentation,
+             use_depth=use_depth,
+             img_scale=img_scale,
+             regloss_weight = reg_loss_weight,
+             lr_decay = lr_decay,
+             regression_loss_fn = reg_loss_type, 
+             amp=amp)
     )
 
     logging.info(f'''Starting training:
@@ -131,11 +153,19 @@ def train_model(
                               lr=learning_rate, weight_decay=weight_decay, momentum=momentum)
     #use adam optimizer
     # optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=5, factor=0.5, min_lr=5e-7)  # goal: maximize score
+    if lr_decay:
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=10, factor=0.5, min_lr=5e-6)  # goal: maximize score
+    else:
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=10000000, factor=0.5, min_lr=5e-5)  # goal: minimize loss
+    
     grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
 
     # loss_fn_rg = weighted_mse_loss
-    loss_fn_rg = weighted_huber_loss
+    if reg_loss_type == 'l1_inv':
+        loss_fn_rg = weighted_l1_inverse_loss
+    else:
+        loss_fn_rg = weighted_huber_loss
+    
     pos_weight = torch.tensor([2.0]).to(device)
     loss_fn_cl = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
@@ -182,7 +212,7 @@ def train_model(
 
                     if head_mode == 'both':
                         binary_pred, masks_pred = model(images)
-                        reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float(), true_binary_masks.float(), increase_factor=8.0, avg_using_binary_mask=True)
+                        reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float(), true_binary_masks.float(), increase_factor=5.0, avg_using_binary_mask=True)
                         class_loss = loss_fn_cl(binary_pred.squeeze(1), true_binary_masks.float())
                         class_loss += dice_loss(F.sigmoid(binary_pred.squeeze(1)), true_binary_masks.float(), multiclass=False)
                         class_loss = class_loss_weight * class_loss
@@ -302,7 +332,7 @@ def train_model(
                             except:
                                 pass
 
-        if save_checkpoint and epoch % 10 == 0:
+        if save_checkpoint and epoch % 1 == 0:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
             # state_dict['mask_values'] = dataset.mask_values
@@ -346,9 +376,11 @@ if __name__ == '__main__':
     if args.use_depth:
         # model = UNet(n_channels=4, n_classes=args.classes, bilinear=args.bilinear)
         # model = UnetResnet(n_classes=args.classes)
+        
         model = TwoHeadUnet(classes=args.classes,
                             in_channels=4,
                             head_config = head_mode)
+        
     else:
         # model = UNet(n_channels=3, n_classes=args.classes, bilinear=args.bilinear)
         # model = UnetResnet(n_classes=args.classes)

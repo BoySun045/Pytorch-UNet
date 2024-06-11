@@ -16,6 +16,14 @@ class ScaledTanh(nn.Module):
     def forward(self, x):
         return 0.5 * (torch.tanh(x) + 1.0)
     
+
+class ClampReLU(nn.Module):
+    def __init__(self):
+        super(ClampReLU, self).__init__()
+
+    def forward(self, x):
+        return F.relu(x).clamp(min=0, max=1)
+    
 class PredictionModel(torch.nn.Module):
     def initialize(self,head_config):
         init.initialize_decoder(self.decoder)
@@ -98,19 +106,51 @@ class PredictionModel(torch.nn.Module):
 
 class SegmentationHead(nn.Sequential):
     def __init__(self, in_channels, out_channels, kernel_size=3, activation=None, upsampling=1):
-        conv2d = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, padding=kernel_size // 2)
+        # conv2d = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, padding=kernel_size // 2)
+        # upsampling = nn.UpsamplingBilinear2d(scale_factor=upsampling) if upsampling > 1 else nn.Identity()
+        # activation = Activation(activation)
+        # super().__init__(conv2d, upsampling, activation)
+
+        # use another network as example:
+            # self.df_head = nn.Sequential(
+            #     nn.Conv2d(dim, 64, kernel_size=3, padding=1),
+            #     nn.ReLU(),
+            #     nn.BatchNorm2d(64),
+            #     nn.Conv2d(64, 64, kernel_size=3, padding=1),
+            #     nn.ReLU(),
+            #     nn.BatchNorm2d(64),
+            #     nn.Conv2d(64, 1, kernel_size=1),
+            #     nn.ReLU(),
+            # )
+        conv2d_1 = nn.Conv2d(in_channels, 64, kernel_size=5, padding=2)
+        activation_1 = nn.ReLU()
+        batch_norm_1 = nn.BatchNorm2d(64)
+        conv2d_2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        activation_2 = nn.ReLU()
+        batch_norm_2 = nn.BatchNorm2d(64)
+        conv2d_3 = nn.Conv2d(64, out_channels, kernel_size=1)
         upsampling = nn.UpsamplingBilinear2d(scale_factor=upsampling) if upsampling > 1 else nn.Identity()
-        activation = Activation(activation)
-        super().__init__(conv2d, upsampling, activation)
+        activation_3 = Activation(activation)
+        super().__init__(conv2d_1, activation_1, batch_norm_1, conv2d_2, activation_2, batch_norm_2, conv2d_3, upsampling, activation_3)
+
         
 
 class RegressionHead(nn.Sequential):
     def __init__(self, in_channels, out_channels, kernel_size=3, activation=None, upsampling=1):
-        conv2d = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, padding=kernel_size // 2)
+        # conv2d = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, padding=kernel_size // 2)
+        # upsampling = nn.UpsamplingBilinear2d(scale_factor=upsampling) if upsampling > 1 else nn.Identity()
+        # activation = ScaledTanh()
+        # super().__init__(conv2d, upsampling, activation)
+        conv2d_1 = nn.Conv2d(in_channels, 64, kernel_size=5, padding=2)
+        activation_1 = nn.ReLU()
+        batch_norm_1 = nn.BatchNorm2d(64)
+        conv2d_2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        activation_2 = nn.ReLU()
+        batch_norm_2 = nn.BatchNorm2d(64)
+        conv2d_3 = nn.Conv2d(64, out_channels, kernel_size=1)
         upsampling = nn.UpsamplingBilinear2d(scale_factor=upsampling) if upsampling > 1 else nn.Identity()
-        activation = ScaledTanh()
-        super().__init__(conv2d, upsampling, activation)
-
+        activation_3 = ScaledTanh()
+        super().__init__(conv2d_1, activation_1, batch_norm_1, conv2d_2, activation_2, batch_norm_2, conv2d_3, upsampling, activation_3)
 
 class DecoderBlock(nn.Module):
     def __init__(

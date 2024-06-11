@@ -37,6 +37,19 @@ def load_image(filename):
         return Image.open(filename)
 
 
+# Log transformation
+def log_transform(y):
+    return np.log1p(y)  # log1p(x) = log(1 + x)
+
+# Reverse log transformation
+def reverse_log_transform(y):
+    return np.expm1(y)  # expm1(x) = exp(x) - 1
+
+def min_max_scale(y, min_val, max_val):
+    return (y - min_val) / (max_val - min_val)
+
+def reverse_min_max_scale(y, min_val, max_val):
+    return y * (max_val - min_val) + min_val
 
 class BasicDataset(Dataset):
     def __init__(self, images_dir: str, mask_dir: str, depth_dir: str = None, scale: float = 1.0, mask_suffix: str = '', data_augmentation=True):
@@ -120,10 +133,19 @@ class BasicDataset(Dataset):
             # if it is mask, the input is directly a np array with weights value 
             # do a resize, normalization and return is enough
             mask = np.array(pil_img)
-            mask_weight_global_max = 2000
-            # resize the mask using nearest neighbor
             mask = np.array(Image.fromarray(mask).resize((int(mask.shape[1] * scale), int(mask.shape[0] * scale),), resample=Image.NEAREST))
-            mask = np.clip(mask/mask_weight_global_max, 0, 1)
+
+            mask_weight_global_max = 3000
+            mask_weight_global_min = 1.0
+            mask = np.clip(mask, mask_weight_global_min, mask_weight_global_max)
+            
+            mask_log = log_transform(mask)
+            mask_log_max = np.log1p(mask_weight_global_max)
+            mask_log_min = np.log1p(mask_weight_global_min)
+            
+            mask = min_max_scale(mask_log, mask_log_min, mask_log_max)
+            mask = np.clip(mask, 0, 1)
+
             binary_mask = (mask > 0.0001).astype(np.int64)
             return mask, binary_mask
 

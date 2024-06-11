@@ -103,7 +103,7 @@ class TwoHeadUnet(PredictionModel):
                 in_channels=decoder_channels[-1],
                 out_channels=classes,
                 activation=activation, # always use relu in the regression class definition
-                kernel_size=3,
+                kernel_size=5,
             )
 
         if head_config == "segmentation":
@@ -124,7 +124,7 @@ class TwoHeadUnet(PredictionModel):
                 in_channels=decoder_channels[-1],
                 out_channels=classes,
                 activation=activation, # always use relu in the regression class definition
-                kernel_size=3,
+                kernel_size=5,
             )
 
         self.name = "u-{}".format(encoder_name)
