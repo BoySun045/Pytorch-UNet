@@ -25,7 +25,7 @@ class ClampReLU(nn.Module):
         return F.relu(x).clamp(min=0, max=1)
     
 class PredictionModel(torch.nn.Module):
-    def initialize(self,head_config):
+    def initialize(self,head_config, df_neighborhood):
         init.initialize_decoder(self.decoder)
         if head_config == "both":
             init.initialize_head(self.segmentation_head)
@@ -34,9 +34,16 @@ class PredictionModel(torch.nn.Module):
             init.initialize_head(self.segmentation_head)
         elif head_config == "regression":
             init.initialize_head(self.regression_head)
-
         self.head_mode = head_config
+        self.df_neighborhood = df_neighborhood
 
+        
+    def normalize_df(self, df):
+        return -torch.log(df / self.df_neighborhood + 1e-6)
+
+    def denormalize_df(self, df_norm):
+        return torch.exp(-df_norm) * self.df_neighborhood
+    
     def check_input_shape(self, x):
 
         h, w = x.shape[-2:]
@@ -83,6 +90,13 @@ class PredictionModel(torch.nn.Module):
             values = self.regression_head(decoder_output)
             if h % self.output_stride != 0 or w % self.output_stride != 0:
                  values = values[:, :, :int(h * self.regression_head.downsample_factor), :int(w * self.regression_head.downsample_factor)]
+            return values
+        
+        elif self.head_mode == "df":
+            norm_values = self.regression_head(decoder_output)
+            if h % self.output_stride != 0 or w % self.output_stride != 0:
+                 norm_values = norm_values[:, :, :int(h * self.regression_head.downsample_factor), :int(w * self.regression_head.downsample_factor)]
+            values = self.denormalize_df(norm_values)
             return values
 
     @torch.no_grad()
@@ -139,10 +153,31 @@ class RegressionHead(nn.Sequential):
         conv2d_3 = nn.Conv2d(64, out_channels, kernel_size=1)
         
         # Downsampling layer
-        downsample = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=int(1/downsample_factor), padding=1)
+        downsample = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=int(1/downsample_factor), padding=1) if downsample_factor != 1 else nn.Identity()
         
         activation_3 = ScaledTanh()  # Assuming ScaledTanh is the desired activation
         
+        super().__init__(conv2d_1, activation_1, batch_norm_1, conv2d_2, activation_2, batch_norm_2, conv2d_3, downsample, activation_3)
+
+class DfRegressionHead(nn.Sequential):
+
+    def __init__(self, in_channels, out_channels, 
+                downsample_factor, 
+                kernel_size=3, activation=None, upsampling=1):
+        
+        self.downsample_factor = downsample_factor
+
+        conv2d_1 = nn.Conv2d(in_channels, 64, kernel_size=kernel_size, padding=kernel_size // 2)
+        activation_1 = nn.ReLU()
+        batch_norm_1 = nn.BatchNorm2d(64)
+        conv2d_2 = nn.Conv2d(64, 64, kernel_size=kernel_size, padding=kernel_size // 2)
+        activation_2 = nn.ReLU()
+        batch_norm_2 = nn.BatchNorm2d(64)
+        conv2d_3 = nn.Conv2d(64, out_channels, kernel_size=1)
+        
+        # Downsampling layer
+        downsample = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=int(1/downsample_factor), padding=1) if downsample_factor != 1 else nn.Identity()
+        activation_3 = nn.ReLU()  
         super().__init__(conv2d_1, activation_1, batch_norm_1, conv2d_2, activation_2, batch_norm_2, conv2d_3, downsample, activation_3)
 
 

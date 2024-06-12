@@ -36,7 +36,7 @@ def gradient_magnitude_and_direction(grad_x, grad_y):
     direction = np.arctan2(grad_y, grad_x) * 180 / np.pi
     return magnitude, direction
 
-def detect_discontinuities(magnitude, threshold):
+def detect_discontinuities(magnitude, threshold_max, threshold_min=0):
     """
     Detect discontinuities by thresholding the gradient magnitude.
 
@@ -47,8 +47,9 @@ def detect_discontinuities(magnitude, threshold):
     Returns:
     numpy array: A binary mask where discontinuities are marked.
     """
-    discontinuity_mask = (magnitude > threshold).astype(np.uint8)
-    return discontinuity_mask
+    discontinuity_mask = (magnitude > threshold_min) & (magnitude < threshold_max)
+
+    return discontinuity_mask.astype(np.uint8)
 
 
 def get_gradient_magitude_and_direction(depth_image):

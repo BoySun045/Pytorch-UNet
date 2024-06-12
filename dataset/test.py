@@ -60,11 +60,12 @@ def main(depth_image_path, binary_mask_path, output_path):
 
                 axs[0, 2].imshow(refine_mask, cmap='gray')
                 axs[0, 2].set_title('Refined Mask')
-                
+
 
                 # Save the subplot
                 output_file = os.path.splitext(mask_file)[0] + '_comparison.png'
                 plt.savefig(os.path.join(output_path, output_file))
+                plt.close()
 
 
 

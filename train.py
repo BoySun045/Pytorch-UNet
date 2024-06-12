@@ -22,13 +22,14 @@ from unet import UNet, UnetResnet, TwoHeadUnet
 from utils.data_loading import BasicDataset, CarvanaDataset
 from utils.dice_score import dice_loss
 from utils.regression_loss import mse_loss, weighted_mse_loss, mae_loss, weighted_huber_loss, weighted_l1_inverse_loss
+from utils.df_loss import df_in_neighbor_loss
 from utils.utils import downsample_torch_mask
 from torchvision.utils import save_image
 import datetime 
 
 
-# dir_path = Path("/media/boysun/Extreme Pro/Actmap_v2_mini")
-dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")
+dir_path = Path("/media/boysun/Extreme Pro/Actmap_v2_mini")
+# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")
 # dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2_mini")
 # dir_path = Path("/media/boysun/Extreme Pro/one_image_dataset_3")
 dir_img = Path(dir_path / 'image/')
@@ -68,40 +69,41 @@ def save_debug_images(batch, epoch, batch_idx, prefix='train', num_images=5):
             save_image(depths[i], depth_path)
 
 
-def plot_images(wandb_rgb, wandb_depth, true_masks, true_binary_masks, wandb_mask_pred, binary_mask, error_map, use_depth):
-    fig, axes = plt.subplots(2, 5 if use_depth else 4, figsize=(20, 8))
+def plot_images(wandb_rgb, wandb_depth,
+                 true_masks, true_binary_masks,
+                 wandb_mask_pred, binary_mask, 
+                 wandb_df_pred, ds_true_df,
+                 error_map, use_depth):
+    num_cols = 5 if use_depth else 4
+    fig, axes = plt.subplots(2, num_cols, figsize=(20, 8))
     
     # RGB image
     axes[0, 0].imshow(np.transpose(wandb_rgb[0].cpu().detach().numpy(), (1, 2, 0)))
     axes[0, 0].set_title('RGB Image')
     axes[0, 0].axis('on')
 
+    idx_offset = 1
     # Depth image (if applicable)
     if use_depth:
         axes[0, 1].imshow(wandb_depth[0].cpu().detach().numpy(), cmap='gray')
         axes[0, 1].set_title('Depth Image')
         axes[0, 1].axis('on')
-        
-        # Adjust indices for subsequent images
-        idx_offset = 1
-    else:
-        idx_offset = 0
+        idx_offset += 1
 
     # True mask as heatmap
-    axes[0, idx_offset + 1].imshow(true_masks[0].cpu().detach().numpy(), cmap='viridis')
-    axes[0, idx_offset + 1].set_title('True Mask (Heatmap)')
-    axes[0, idx_offset + 1].axis('on')
-        # also show the image shape, i.e. show axes
+    axes[0, idx_offset].imshow(true_masks[0].cpu().detach().numpy(), cmap='viridis')
+    axes[0, idx_offset].set_title('True Mask (Heatmap)')
+    axes[0, idx_offset].axis('on')
 
     # True binary mask
-    axes[0, idx_offset + 2].imshow(true_binary_masks[0].cpu().detach().numpy(), cmap='gray')
-    axes[0, idx_offset + 2].set_title('True Binary Mask')
-    axes[0, idx_offset + 2].axis('on')
+    axes[0, idx_offset + 1].imshow(true_binary_masks[0].cpu().detach().numpy(), cmap='gray')
+    axes[0, idx_offset + 1].set_title('True Binary Mask')
+    axes[0, idx_offset + 1].axis('on')
 
     # Predicted mask as heatmap
-    axes[0, idx_offset + 3].imshow(wandb_mask_pred[0].cpu().detach().numpy(), cmap='viridis')
-    axes[0, idx_offset + 3].set_title('Predicted Mask (Heatmap)')
-    axes[0, idx_offset + 3].axis('on')
+    axes[0, idx_offset + 2].imshow(wandb_mask_pred[0].cpu().detach().numpy(), cmap='viridis')
+    axes[0, idx_offset + 2].set_title('Predicted Mask (Heatmap)')
+    axes[0, idx_offset + 2].axis('on')
 
     # Error map as heatmap
     axes[1, 0].imshow(error_map[0].cpu().detach().numpy(), cmap='viridis')
@@ -113,9 +115,20 @@ def plot_images(wandb_rgb, wandb_depth, true_masks, true_binary_masks, wandb_mas
     axes[1, 1].set_title('Predicted Binary Mask')
     axes[1, 1].axis('on')
 
+    # True distance field
+    axes[1, 2].imshow(ds_true_df[0].cpu().detach().numpy(), cmap='viridis')
+    axes[1, 2].set_title('True Distance Field')
+    axes[1, 2].axis('on')
+
+    # Predicted distance field
+    axes[1, 3].imshow(wandb_df_pred[0].cpu().detach().numpy(), cmap='viridis')
+    axes[1, 3].set_title('Predicted Distance Field')
+    axes[1, 3].axis('on')
+    
     # Remove any empty axes
-    for i in range(2, 5 if use_depth else 4):
-        fig.delaxes(axes[1, i])
+    for ax in axes.ravel():
+        if not ax.has_data():
+            ax.axis('off')
 
     # Convert plot to an image
     fig.canvas.draw()
@@ -126,17 +139,31 @@ def plot_images(wandb_rgb, wandb_depth, true_masks, true_binary_masks, wandb_mas
     
     return img_array
 
-def log_images(experiment, optimizer, val_score_cl, val_score_rg, wandb_rgb, wandb_depth, true_masks, true_binary_masks, wandb_mask_pred, binary_mask, global_step, epoch, histograms, use_depth):
+def log_images(experiment, optimizer, 
+               val_score_cl, val_score_rg, val_score_df, 
+               wandb_rgb, wandb_depth,
+               true_masks, true_binary_masks, 
+               wandb_mask_pred, binary_mask,
+               wandb_df_pred, ds_true_df, 
+               global_step, epoch, histograms, use_depth):
 
     # Calculate the error map
-    error_map = torch.abs(true_masks - wandb_mask_pred).cpu().detach()
-    combined_image = plot_images(wandb_rgb, wandb_depth, true_masks, true_binary_masks, wandb_mask_pred, binary_mask, error_map, use_depth)
+    
+    # error_map = torch.abs(true_masks - wandb_mask_pred).cpu().detach()
+    error_map = torch.abs(ds_true_df - wandb_df_pred).cpu().detach()
+    
+    combined_image = plot_images(wandb_rgb, wandb_depth, 
+                                 true_masks, true_binary_masks,
+                                   wandb_mask_pred, binary_mask,
+                                   wandb_df_pred, ds_true_df, 
+                                   error_map, use_depth)
     
     try:
         experiment.log({
             'learning rate': optimizer.param_groups[0]['lr'],
             'validation avg score classification': val_score_cl,
             'validation avg score regression': val_score_rg,
+            'validation avg score distance field': val_score_df,
             'combined images': wandb.Image(combined_image),
             'step': global_step,
             'epoch': epoch,
@@ -172,7 +199,7 @@ def train_model(
         reg_ds_factor = 1.0
 ):
     # 1. Create dataset
-    data_augmentation = True
+    data_augmentation = False
     log_transform = log_transform
     if use_depth:
         try:
@@ -196,12 +223,12 @@ def train_model(
     print(f"Train size: {n_train}, Validation size: {n_val}")
 
     # 4. Create data loaders
-    loader_args = dict(batch_size=batch_size, num_workers=32, pin_memory=True)
+    loader_args = dict(batch_size=batch_size, num_workers=16, pin_memory=True)
     train_loader = DataLoader(train_set, shuffle=True, **loader_args)
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
     # (Initialize logging)
-    experiment = wandb.init(project='U-Net-resnet-v2', resume='allow', anonymous='must')
+    experiment = wandb.init(project='U-Net-resnet-v2-debug', resume='allow', anonymous='must')
     experiment.config.update(
         dict(epochs=epochs, 
              batch_size=batch_size, 
@@ -254,6 +281,8 @@ def train_model(
     
     pos_weight = torch.tensor([2.0]).to(device)
     loss_fn_cl = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    
+    loss_fn_df = df_in_neighbor_loss
 
     global_step = 0 
     class_loss_weight = 1.0
@@ -268,6 +297,7 @@ def train_model(
             for _, batch in enumerate(train_loader):
 
                 true_masks, true_binary_masks = batch['mask'], batch['binary_mask']
+                true_df = batch['df']
 
                 if not use_depth:
                     images = batch['image']
@@ -293,10 +323,12 @@ def train_model(
 
                 true_masks = true_masks.to(device=device, dtype=torch.float32)
                 true_binary_masks = true_binary_masks.to(device=device, dtype=torch.float32)
+                true_df = true_df.to(device=device, dtype=torch.float32)
 
                 # do downsample for gt mask 
                 ds_true_masks = downsample_torch_mask(true_masks, reg_ds_factor, "bilinear") if reg_ds_factor != 1.0 else true_masks
                 ds_true_binary_masks = downsample_torch_mask(true_binary_masks, reg_ds_factor, "nearest") if reg_ds_factor != 1.0 else true_binary_masks
+                ds_true_df = downsample_torch_mask(true_df, reg_ds_factor, "bilinear") if reg_ds_factor != 1.0 else true_df
 
                 with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
 
@@ -330,6 +362,14 @@ def train_model(
                         loss = reg_loss
 
                         class_loss = None
+                    
+                    elif head_mode == 'df':
+                        df_pred = model(images)
+                        df_loss = loss_fn_df(df_pred.squeeze(1), ds_true_df)
+                        loss = df_loss
+                        class_loss = None
+                        reg_loss = None
+
 
                 optimizer.zero_grad(set_to_none=True)
                 grad_scaler.scale(loss).backward()
@@ -344,6 +384,7 @@ def train_model(
                         'train loss total': loss.item(),
                         'train loss regression': reg_loss.item() if reg_loss is not None else 0.0,
                         'train loss classification': class_loss.item() if class_loss is not None else 0.0,
+                        'train loss df': df_loss.item() if df_loss is not None else 0.0,
                         'step': global_step,
                         'epoch': epoch
                     })
@@ -351,7 +392,7 @@ def train_model(
 
                 # Evaluation round
                 # division_step = (n_train // (5 * batch_size))
-                division_step = 100
+                division_step = 10
                 if division_step > 0 and global_step % division_step == 0:
                     histograms = {}
                     for tag, value in model.named_parameters():
@@ -361,7 +402,7 @@ def train_model(
                         if not (torch.isinf(value.grad) | torch.isnan(value.grad)).any():
                             histograms['Gradients/' + tag] = wandb.Histogram(value.grad.data.cpu())
 
-                    val_score_cl, val_score_rg = evaluate(model, val_loader, device, amp, 
+                    val_score_cl, val_score_rg, val_score_df = evaluate(model, val_loader, device, amp, 
                                                           use_depth=use_depth, head_mode = head_mode,
                                                           reg_ds_factor=reg_ds_factor)
 
@@ -384,8 +425,17 @@ def train_model(
                         # binary_mask does not exist in this case, put a dummy tensor
                         binary_mask = torch.zeros_like(true_masks)
 
+                    elif head_mode == 'df':
+                        scheduler.step(1 - val_score_df)
+                        wandb_df_pred = df_pred.squeeze(1)
+                        # binary_mask does not exist in this case, put a dummy tensor
+                        wandb_mask_pred = torch.zeros_like(true_masks)
+                        binary_mask = torch.zeros_like(true_masks)
+
+
                     logging.info(f'Validation Classification Dice score: {val_score_cl}')
                     logging.info(f'Validation Regression mse : {val_score_rg}')
+                    logging.info(f'Validation distance field mse : {val_score_df}')
 
                     # since image could be 4 channels, we need to convert it to 3 channels to get the rgb image
                     wandb_rgb = images[:, :3, :, :]
@@ -397,11 +447,13 @@ def train_model(
                     #            true_masks, true_binary_masks, 
                     #            wandb_mask_pred, binary_mask, 
                     #            global_step, epoch, histograms, use_depth)
+        
                     log_images(experiment, optimizer,
-                                 val_score_cl, val_score_rg,
+                                 val_score_cl, val_score_rg, val_score_df,
                                  wandb_rgb, wandb_depth,
                                  ds_true_masks, true_binary_masks,
                                  wandb_mask_pred, binary_mask,
+                                 wandb_df_pred, ds_true_df,
                                  global_step, epoch, histograms, use_depth)
 
 

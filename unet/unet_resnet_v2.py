@@ -6,7 +6,8 @@ from .unet_parts_v2 import (
     UnetDecoder,
     RegressionHead,
     PredictionModel,
-    SegmentationHead
+    SegmentationHead,
+    DfRegressionHead
 )
 import torch.nn as nn
 import torch 
@@ -68,7 +69,8 @@ class TwoHeadUnet(PredictionModel):
         classes: int = 1,
         activation: Optional[Union[str, callable]] = None,
         head_config: str = "both",  # "both", "segmentation", "regression"
-        regression_downsample_factor: float = 1.0 
+        regression_downsample_factor: float = 1.0,
+        df_neighborhood: int = 10, 
     ):
         super().__init__()
 
@@ -130,8 +132,19 @@ class TwoHeadUnet(PredictionModel):
                 kernel_size=5,
             )
 
+        if head_config == "df":
+            self.segmentation_head = None
+
+            self.regression_head = DfRegressionHead(
+                in_channels=decoder_channels[-1],
+                out_channels=classes,
+                downsample_factor=regression_downsample_factor,
+                activation=activation, # always use relu in the regression class definition
+                kernel_size=3,
+            )
+
         self.name = "u-{}".format(encoder_name)
-        self.initialize(head_config)
+        self.initialize(head_config, df_neighborhood)
 
         self.output_stride = 32
         self.n_classes = classes

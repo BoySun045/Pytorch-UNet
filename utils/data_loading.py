@@ -12,7 +12,7 @@ from pathlib import Path
 from torch.utils.data import Dataset
 from tqdm import tqdm
 from utils.data_augmentation import get_transforms, get_static_transforms
-from ..dataset.hm3d_gt import load_image, log_transform_mask, min_max_scale
+from dataset.hm3d_gt import load_image, log_transform_mask, min_max_scale, compute_df
 
 
 
@@ -112,6 +112,24 @@ class BasicDataset(Dataset):
                     img = img / 255.0
 
                 return img
+    
+    @staticmethod
+    def get_df(mask, depth, scale, df_neighbourhood=10):
+        
+        mask = np.array(mask)
+        mask = np.array(Image.fromarray(mask).resize((int(mask.shape[1] * scale), int(mask.shape[0] * scale),), resample=Image.NEAREST))
+        binary_mask = (mask > 0.0001).astype(np.float32)
+
+        w, h = depth.size
+        newW, newH = int(scale * w), int(scale * h)
+        assert newW > 0 and newH > 0, 'Scale is too small, resized images would have no pixel'
+        depth = depth.resize((newW, newH), resample=Image.BICUBIC)
+        depth = np.asarray(depth)
+        
+        assert mask.shape == depth.shape, f'Mask and depth should have the same size, but are {mask.shape} and {depth.shape}'
+
+        df = compute_df(binary_mask, depth, df_neighbourhood)
+        return df
 
 
     def __getitem__(self, idx):
@@ -129,6 +147,7 @@ class BasicDataset(Dataset):
             depth_file = list(self.depth_dir.glob(name + '.*'))
             assert len(depth_file) == 1, f'Either no depth image or multiple depth images found for the ID {name}: {depth_file}'
             depth = load_image(depth_file[0])
+            df = self.get_df(mask, depth, self.scale)
             depth = self.preprocess(depth, self.scale, is_mask=False, is_depth=True)
 
         # assert img.size == mask.size, \
@@ -148,6 +167,8 @@ class BasicDataset(Dataset):
             if self.depth_dir is not None:
                 depth = np.transpose(depth, (1, 2, 0)) if depth.ndim == 3 else depth[..., np.newaxis]
                 sample['depth'] = depth
+                df = np.transpose(df, (1, 2, 0)) if df.ndim == 3 else df[..., np.newaxis]
+                sample['df'] = df
             
             augmented = self.transforms(**sample)
             img = augmented['image']
@@ -156,6 +177,8 @@ class BasicDataset(Dataset):
 
             if self.depth_dir is not None:
                 depth = augmented['depth']
+                df = augmented['df']
+                df = np.transpose(df, (2, 0, 1)).squeeze() if df.ndim == 3 else df.squeeze(-1)
 
             # Transpose back to (C, H, W)
             # print(img.shape, mask.shape, binary_mask.shape)
@@ -172,7 +195,8 @@ class BasicDataset(Dataset):
                 'image': torch.as_tensor(img).float().contiguous(),
                 'mask': torch.as_tensor(mask).float().contiguous(),
                 'binary_mask': torch.as_tensor(binary_mask).long().contiguous(),
-                'depth': torch.as_tensor(depth).float().contiguous()
+                'depth': torch.as_tensor(depth).float().contiguous(),
+                'df': torch.as_tensor(df).float().contiguous()
             }
         
         else:
