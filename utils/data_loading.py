@@ -12,32 +12,10 @@ from pathlib import Path
 from torch.utils.data import Dataset
 from tqdm import tqdm
 from utils.data_augmentation import get_transforms, get_static_transforms
+from ..dataset.hm3d_gt import load_image, log_transform_mask, min_max_scale
 
-def load_image(filename):
-    ext = splitext(filename)[1]
-    if ext == '.npy':
-        return Image.fromarray(np.load(filename))
-    if ext == '.npz':
-        weights = np.load(filename)['weights']
-        return weights
-    elif ext in ['.pt', '.pth']:
-        return Image.fromarray(torch.load(filename).numpy())
-    else:
-        return Image.open(filename)
 
-# Log transformation
-def log_transform_mask(y):
-    return np.log1p(y)  # log1p(x) = log(1 + x)
 
-# Reverse log transformation
-def reverse_log_transform_mask(y):
-    return np.expm1(y)  # expm1(x) = exp(x) - 1
-
-def min_max_scale(y, min_val, max_val):
-    return (y - min_val) / (max_val - min_val)
-
-def reverse_min_max_scale(y, min_val, max_val):
-    return y * (max_val - min_val) + min_val
 
 class BasicDataset(Dataset):
     def __init__(self, images_dir: str, mask_dir: str, depth_dir: str = None, scale: float = 1.0, mask_suffix: str = '', data_augmentation=True, log_transform=True):
