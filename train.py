@@ -22,19 +22,20 @@ from unet import UNet, UnetResnet, TwoHeadUnet
 from utils.data_loading import BasicDataset, CarvanaDataset
 from utils.dice_score import dice_loss
 from utils.regression_loss import mse_loss, weighted_mse_loss, mae_loss, weighted_huber_loss, weighted_l1_inverse_loss
+from utils.utils import downsample_torch_mask
 from torchvision.utils import save_image
 import datetime 
 
 
-dir_path = Path("/media/boysun/Extreme Pro/Actmap_v2_mini")
-# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")
+# dir_path = Path("/media/boysun/Extreme Pro/Actmap_v2_mini")
+dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")
+# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2_mini")
 # dir_path = Path("/media/boysun/Extreme Pro/one_image_dataset_3")
 dir_img = Path(dir_path / 'image/')
 dir_mask = Path(dir_path / 'weighted_mask/')
 # dir_checkpoint = Path(dir_path / 'checkpoints/')
-# get the current time
 dir_checkpoint = Path(dir_path / 'checkpoints' / datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
-# dir_checkpoint = Path('/cluster/scratch/boysun/checkpoints/')
+# dir_checkpoint = Path('/cluster/scratch/boysun/checkpoints' / datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
 dir_debug = Path(dir_path / 'debug/')
 dir_depth = Path(dir_path / 'depth/')
 
@@ -73,13 +74,13 @@ def plot_images(wandb_rgb, wandb_depth, true_masks, true_binary_masks, wandb_mas
     # RGB image
     axes[0, 0].imshow(np.transpose(wandb_rgb[0].cpu().detach().numpy(), (1, 2, 0)))
     axes[0, 0].set_title('RGB Image')
-    axes[0, 0].axis('off')
+    axes[0, 0].axis('on')
 
     # Depth image (if applicable)
     if use_depth:
         axes[0, 1].imshow(wandb_depth[0].cpu().detach().numpy(), cmap='gray')
         axes[0, 1].set_title('Depth Image')
-        axes[0, 1].axis('off')
+        axes[0, 1].axis('on')
         
         # Adjust indices for subsequent images
         idx_offset = 1
@@ -89,27 +90,28 @@ def plot_images(wandb_rgb, wandb_depth, true_masks, true_binary_masks, wandb_mas
     # True mask as heatmap
     axes[0, idx_offset + 1].imshow(true_masks[0].cpu().detach().numpy(), cmap='viridis')
     axes[0, idx_offset + 1].set_title('True Mask (Heatmap)')
-    axes[0, idx_offset + 1].axis('off')
+    axes[0, idx_offset + 1].axis('on')
+        # also show the image shape, i.e. show axes
 
     # True binary mask
     axes[0, idx_offset + 2].imshow(true_binary_masks[0].cpu().detach().numpy(), cmap='gray')
     axes[0, idx_offset + 2].set_title('True Binary Mask')
-    axes[0, idx_offset + 2].axis('off')
+    axes[0, idx_offset + 2].axis('on')
 
     # Predicted mask as heatmap
     axes[0, idx_offset + 3].imshow(wandb_mask_pred[0].cpu().detach().numpy(), cmap='viridis')
     axes[0, idx_offset + 3].set_title('Predicted Mask (Heatmap)')
-    axes[0, idx_offset + 3].axis('off')
+    axes[0, idx_offset + 3].axis('on')
 
     # Error map as heatmap
     axes[1, 0].imshow(error_map[0].cpu().detach().numpy(), cmap='viridis')
     axes[1, 0].set_title('Error Map (Heatmap)')
-    axes[1, 0].axis('off')
+    axes[1, 0].axis('on')
 
     # Predicted binary mask
     axes[1, 1].imshow(binary_mask[0].cpu().detach().numpy(), cmap='gray')
     axes[1, 1].set_title('Predicted Binary Mask')
-    axes[1, 1].axis('off')
+    axes[1, 1].axis('on')
 
     # Remove any empty axes
     for i in range(2, 5 if use_depth else 4):
@@ -143,6 +145,8 @@ def log_images(experiment, optimizer, val_score_cl, val_score_rg, wandb_rgb, wan
     except Exception as e:
         print(f"Failed to log to Weights and Biases: {e}")
 
+
+
         
 def train_model(
         model,
@@ -155,7 +159,7 @@ def train_model(
         img_scale: float = 0.5,
         amp: bool = False,
         weight_decay: float = 1e-8,
-        momentum: float = 0.95,
+        momentum: float = 0.9,
         gradient_clipping: float = 1.0,
         use_depth: bool = False,
         reg_loss_weight: float = 1.0,
@@ -164,7 +168,8 @@ def train_model(
         lr_decay: bool = True,
         reg_loss_type = 'huber',
         reg_loss_cal_inmask = True,
-        log_transform = True
+        log_transform = True,
+        reg_ds_factor = 1.0
 ):
     # 1. Create dataset
     data_augmentation = True
@@ -191,7 +196,7 @@ def train_model(
     print(f"Train size: {n_train}, Validation size: {n_val}")
 
     # 4. Create data loaders
-    loader_args = dict(batch_size=batch_size, num_workers=16, pin_memory=True)
+    loader_args = dict(batch_size=batch_size, num_workers=32, pin_memory=True)
     train_loader = DataLoader(train_set, shuffle=True, **loader_args)
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
@@ -212,7 +217,8 @@ def train_model(
              lr_decay = lr_decay,
              regression_loss_fn = reg_loss_type,
              regression_loss_cal_inmask = reg_loss_cal_inmask,
-             log_transform = log_transform, 
+             log_transform = log_transform,
+             regression_downsample_factor = reg_ds_factor, 
              amp=amp)
     )
 
@@ -288,11 +294,21 @@ def train_model(
                 true_masks = true_masks.to(device=device, dtype=torch.float32)
                 true_binary_masks = true_binary_masks.to(device=device, dtype=torch.float32)
 
+                # do downsample for gt mask 
+                ds_true_masks = downsample_torch_mask(true_masks, reg_ds_factor, "bilinear") if reg_ds_factor != 1.0 else true_masks
+                ds_true_binary_masks = downsample_torch_mask(true_binary_masks, reg_ds_factor, "nearest") if reg_ds_factor != 1.0 else true_binary_masks
+
                 with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
 
                     if head_mode == 'both':
                         binary_pred, masks_pred = model(images)
-                        reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float(), true_binary_masks.float(), increase_factor=5.0, avg_using_binary_mask=reg_loss_cal_inmask)
+
+                        # reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float(), true_binary_masks.float(), 
+                        #                       increase_factor=5.0, avg_using_binary_mask=reg_loss_cal_inmask)
+
+                        reg_loss = loss_fn_rg(masks_pred.squeeze(1), ds_true_masks.float(), ds_true_binary_masks.float(),
+                                                increase_factor=5.0, avg_using_binary_mask=reg_loss_cal_inmask)
+
                         class_loss = loss_fn_cl(binary_pred.squeeze(1), true_binary_masks.float())
                         class_loss += dice_loss(F.sigmoid(binary_pred.squeeze(1)), true_binary_masks.float(), multiclass=False)
                         class_loss = class_loss_weight * class_loss
@@ -309,7 +325,8 @@ def train_model(
                         
                     elif head_mode == 'regression':
                         masks_pred = model(images)
-                        reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float(), true_binary_masks.float(), increase_factor=8.0, avg_using_binary_mask=False)
+                        reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float(), true_binary_masks.float(), 
+                                              increase_factor=8.0, avg_using_binary_mask=False)
                         loss = reg_loss
 
                         class_loss = None
@@ -344,12 +361,15 @@ def train_model(
                         if not (torch.isinf(value.grad) | torch.isnan(value.grad)).any():
                             histograms['Gradients/' + tag] = wandb.Histogram(value.grad.data.cpu())
 
-                    val_score_cl, val_score_rg = evaluate(model, val_loader, device, amp, use_depth=use_depth, head_mode = head_mode)
+                    val_score_cl, val_score_rg = evaluate(model, val_loader, device, amp, 
+                                                          use_depth=use_depth, head_mode = head_mode,
+                                                          reg_ds_factor=reg_ds_factor)
 
                     if head_mode == 'both':
                         scheduler.step(val_score_cl - val_score_rg)
                         binary_mask = F.sigmoid(binary_pred.squeeze(1)) > 0.5
-                        wandb_mask_pred = masks_pred.squeeze(1) * (F.sigmoid(binary_pred.squeeze(1))> 0.5)
+                        ds_binary_mask = downsample_torch_mask(binary_mask.float(), reg_ds_factor, "nearest") if reg_ds_factor != 1.0 else binary_mask
+                        wandb_mask_pred = masks_pred.squeeze(1) * (F.sigmoid(ds_binary_mask) > 0.5)
 
                     elif head_mode == 'segmentation':
                         scheduler.step(1 - val_score_cl)
@@ -371,12 +391,18 @@ def train_model(
                     wandb_rgb = images[:, :3, :, :]
                     wandb_depth = images[:, -1, :, :] if use_depth else None # depth is the last channel
         
-                    log_images(experiment, optimizer, 
-                               val_score_cl, val_score_rg, 
-                               wandb_rgb, wandb_depth,
-                               true_masks, true_binary_masks, 
-                               wandb_mask_pred, binary_mask, 
-                               global_step, epoch, histograms, use_depth)
+                    # log_images(experiment, optimizer, 
+                    #            val_score_cl, val_score_rg, 
+                    #            wandb_rgb, wandb_depth,
+                    #            true_masks, true_binary_masks, 
+                    #            wandb_mask_pred, binary_mask, 
+                    #            global_step, epoch, histograms, use_depth)
+                    log_images(experiment, optimizer,
+                                 val_score_cl, val_score_rg,
+                                 wandb_rgb, wandb_depth,
+                                 ds_true_masks, true_binary_masks,
+                                 wandb_mask_pred, binary_mask,
+                                 global_step, epoch, histograms, use_depth)
 
 
         if save_checkpoint and epoch % 100 == 0:
@@ -405,6 +431,7 @@ def get_args():
     parser.add_argument('--reg_loss_weight', '-rw', type=float, default=1.0, help='Weight of regression loss')
     parser.add_argument('--use_depth','-ud', action='store_true', default=False, help='Use depth image')
     parser.add_argument('--head_mode', type=str, default='segmentation', help='both or segmentation or regression')
+    parser.add_argument('--regression_downsample_factor','-rdf', type=float, default=1.0, help='Downsample factor for regression head')
     return parser.parse_args()
 
 
@@ -426,14 +453,16 @@ if __name__ == '__main__':
         
         model = TwoHeadUnet(classes=args.classes,
                             in_channels=4,
-                            head_config = head_mode)
+                            head_config = head_mode,
+                            regression_downsample_factor=args.regression_downsample_factor)
         
     else:
         # model = UNet(n_channels=3, n_classes=args.classes, bilinear=args.bilinear)
         # model = UnetResnet(n_classes=args.classes)
         model = TwoHeadUnet(classes=args.classes,
                             in_channels=3,
-                            head_config = head_mode)
+                            head_config = head_mode,
+                            regression_downsample_factor=args.regression_downsample_factor)
         
     model = model.to(memory_format=torch.channels_last)
 
@@ -462,7 +491,8 @@ if __name__ == '__main__':
             use_depth=args.use_depth,
             reg_loss_weight=args.reg_loss_weight,
             head_mode = head_mode,
-            weight_decay=1e-6
+            weight_decay=1e-6,
+            reg_ds_factor=args.regression_downsample_factor
         )
     except torch.cuda.OutOfMemoryError:
         logging.error('Detected OutOfMemoryError! '
@@ -482,5 +512,6 @@ if __name__ == '__main__':
             use_depth=args.use_depth,
             reg_loss_weight=args.reg_loss_weight,
             head_mode = head_mode,
-            weight_decay=1e-6
+            weight_decay=1e-6,
+            reg_ds_factor=args.regression_downsample_factor
         )

@@ -4,9 +4,12 @@ from tqdm import tqdm
 
 from utils.regression_loss import weighted_mse_loss
 from utils.dice_score import dice_coeff
+from utils.utils import downsample_torch_mask
 
 @torch.inference_mode()
-def evaluate(net, dataloader, device, amp, use_depth=False, only_depth=False, head_mode="segmentation"):
+def evaluate(net, dataloader, device, amp, use_depth=False, 
+             only_depth=False, head_mode="segmentation",
+             reg_ds_factor=1.0):
     net.eval()
     num_val_batches = len(dataloader)
 
@@ -31,7 +34,10 @@ def evaluate(net, dataloader, device, amp, use_depth=False, only_depth=False, he
 
             image = image.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
             mask_true = mask_true.to(device=device, dtype=torch.float32)
-            true_binary_mask = true_binary_mask.to(device=device, dtype=torch.long)
+            true_binary_mask = true_binary_mask.to(device=device, dtype=torch.float32)
+
+            ds_mask_true = downsample_torch_mask(mask_true, reg_ds_factor, ds_method='bilinear') if reg_ds_factor != 1.0 else mask_true
+            ds_true_binary_mask = downsample_torch_mask(true_binary_mask, reg_ds_factor, ds_method='nearest') if reg_ds_factor != 1.0 else true_binary_mask
 
             if head_mode == "segmentation":
                 binary_pred = net(image)
@@ -42,7 +48,8 @@ def evaluate(net, dataloader, device, amp, use_depth=False, only_depth=False, he
             elif head_mode == "both":
                 binary_pred, mask_pred = net(image)
                 dice_score += dice_coeff((F.sigmoid(binary_pred) > 0.5).float().squeeze(1), true_binary_mask, reduce_batch_first=False)
-                reg_loss += loss_fn_rg(mask_pred, mask_true.float(), true_binary_mask.float(), increase_factor=1.0, avg_using_binary_mask=True)
+                # reg_loss += loss_fn_rg(mask_pred, mask_true.float(), true_binary_mask.float(), increase_factor=1.0, avg_using_binary_mask=True)
+                reg_loss += loss_fn_rg(mask_pred, ds_mask_true.float(), ds_true_binary_mask.float(), increase_factor=1.0, avg_using_binary_mask=False)
 
     net.train()
     avg_dice_score = dice_score / num_val_batches if dice_score != 0 else 0

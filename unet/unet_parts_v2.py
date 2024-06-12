@@ -70,7 +70,7 @@ class PredictionModel(torch.nn.Module):
             # remove the padding if needed
             if h % self.output_stride != 0 or w % self.output_stride != 0:
                 masks = masks[:, :, :h, :w]
-                values = values[:, :, :h, :w]
+                values = values[:, :, :int(h * self.regression_head.downsample_factor), :int(w * self.regression_head.downsample_factor)]
             return masks, values            
 
         elif self.head_mode == "segmentation":
@@ -82,7 +82,7 @@ class PredictionModel(torch.nn.Module):
         elif self.head_mode == "regression":
             values = self.regression_head(decoder_output)
             if h % self.output_stride != 0 or w % self.output_stride != 0:
-                values = values[:, :, :h, :w]
+                 values = values[:, :, :int(h * self.regression_head.downsample_factor), :int(w * self.regression_head.downsample_factor)]
             return values
 
     @torch.no_grad()
@@ -111,18 +111,7 @@ class SegmentationHead(nn.Sequential):
         # activation = Activation(activation)
         # super().__init__(conv2d, upsampling, activation)
 
-        # use another network as example:
-            # self.df_head = nn.Sequential(
-            #     nn.Conv2d(dim, 64, kernel_size=3, padding=1),
-            #     nn.ReLU(),
-            #     nn.BatchNorm2d(64),
-            #     nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            #     nn.ReLU(),
-            #     nn.BatchNorm2d(64),
-            #     nn.Conv2d(64, 1, kernel_size=1),
-            #     nn.ReLU(),
-            # )
-        conv2d_1 = nn.Conv2d(in_channels, 64, kernel_size=5, padding=2)
+        conv2d_1 = nn.Conv2d(in_channels, 64, kernel_size=3, padding=1)
         activation_1 = nn.ReLU()
         batch_norm_1 = nn.BatchNorm2d(64)
         conv2d_2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
@@ -136,11 +125,11 @@ class SegmentationHead(nn.Sequential):
         
 
 class RegressionHead(nn.Sequential):
-    def __init__(self, in_channels, out_channels, kernel_size=3, activation=None, upsampling=1):
-        # conv2d = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, padding=kernel_size // 2)
-        # upsampling = nn.UpsamplingBilinear2d(scale_factor=upsampling) if upsampling > 1 else nn.Identity()
-        # activation = ScaledTanh()
-        # super().__init__(conv2d, upsampling, activation)
+    def __init__(self, in_channels, out_channels, 
+                 downsample_factor, 
+                 kernel_size=3, activation=None, upsampling=1):
+        self.downsample_factor = downsample_factor
+
         conv2d_1 = nn.Conv2d(in_channels, 64, kernel_size=5, padding=2)
         activation_1 = nn.ReLU()
         batch_norm_1 = nn.BatchNorm2d(64)
@@ -148,9 +137,14 @@ class RegressionHead(nn.Sequential):
         activation_2 = nn.ReLU()
         batch_norm_2 = nn.BatchNorm2d(64)
         conv2d_3 = nn.Conv2d(64, out_channels, kernel_size=1)
-        upsampling = nn.UpsamplingBilinear2d(scale_factor=upsampling) if upsampling > 1 else nn.Identity()
-        activation_3 = ScaledTanh()
-        super().__init__(conv2d_1, activation_1, batch_norm_1, conv2d_2, activation_2, batch_norm_2, conv2d_3, upsampling, activation_3)
+        
+        # Downsampling layer
+        downsample = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=int(1/downsample_factor), padding=1)
+        
+        activation_3 = ScaledTanh()  # Assuming ScaledTanh is the desired activation
+        
+        super().__init__(conv2d_1, activation_1, batch_norm_1, conv2d_2, activation_2, batch_norm_2, conv2d_3, downsample, activation_3)
+
 
 class DecoderBlock(nn.Module):
     def __init__(

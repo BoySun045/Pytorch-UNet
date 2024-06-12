@@ -67,7 +67,8 @@ class TwoHeadUnet(PredictionModel):
         in_channels: int = 3,
         classes: int = 1,
         activation: Optional[Union[str, callable]] = None,
-        head_config: str = "both"  # "both", "segmentation", "regression"
+        head_config: str = "both",  # "both", "segmentation", "regression"
+        regression_downsample_factor: float = 1.0 
     ):
         super().__init__()
 
@@ -102,6 +103,7 @@ class TwoHeadUnet(PredictionModel):
             self.regression_head = RegressionHead(
                 in_channels=decoder_channels[-1],
                 out_channels=classes,
+                downsample_factor=regression_downsample_factor,
                 activation=activation, # always use relu in the regression class definition
                 kernel_size=5,
             )
@@ -123,6 +125,7 @@ class TwoHeadUnet(PredictionModel):
             self.regression_head = RegressionHead(
                 in_channels=decoder_channels[-1],
                 out_channels=classes,
+                downsample_factor=regression_downsample_factor,
                 activation=activation, # always use relu in the regression class definition
                 kernel_size=5,
             )
@@ -134,24 +137,25 @@ class TwoHeadUnet(PredictionModel):
         self.n_classes = classes
         self.n_channels = in_channels
 
-
     @staticmethod
     def modify_first_conv(conv_layer, in_channels):
         if in_channels == conv_layer.in_channels:
             return conv_layer
         else:
-            new_conv = nn.Conv2d(in_channels, conv_layer.out_channels, 
-                                kernel_size=conv_layer.kernel_size, 
-                                stride=conv_layer.stride, 
-                                padding=conv_layer.padding, 
-                                bias=(conv_layer.bias is not None))
-            
-            if in_channels < conv_layer.in_channels:
-                # If new in_channels are less than the original, we slice the weights
-                new_conv.weight.data = conv_layer.weight.data[:, :in_channels, :, :]
-            else:
-                # If new in_channels are more than the original, we repeat the weights
-                new_conv.weight.data[:, :conv_layer.in_channels, :, :] = conv_layer.weight.data
-                new_conv.weight.data[:, conv_layer.in_channels:, :, :] = conv_layer.weight.data[:, :in_channels - conv_layer.in_channels, :, :]
+            new_conv = nn.Conv2d(
+                in_channels, conv_layer.out_channels,
+                kernel_size=conv_layer.kernel_size,
+                stride=conv_layer.stride,
+                padding=conv_layer.padding,
+                bias=(conv_layer.bias is not None)
+            )
+
+            # Adjust weights for new in_channels
+            with torch.no_grad():
+                if in_channels < conv_layer.in_channels:
+                    new_conv.weight.data = conv_layer.weight.data[:, :in_channels, :, :]
+                else:
+                    new_conv.weight.data[:, :conv_layer.in_channels, :, :] = conv_layer.weight.data
+                    new_conv.weight.data[:, conv_layer.in_channels:, :, :] = conv_layer.weight.data[:, :in_channels - conv_layer.in_channels, :, :]
 
             return new_conv
