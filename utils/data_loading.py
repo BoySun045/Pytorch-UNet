@@ -13,7 +13,7 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 from utils.data_augmentation import get_transforms, get_static_transforms
 from dataset.hm3d_gt import load_image, log_transform_mask, min_max_scale, compute_df
-
+import cv2
 
 
 
@@ -78,13 +78,16 @@ class BasicDataset(Dataset):
 
 
         else:
-            w, h = pil_img.size
-            newW, newH = int(scale * w), int(scale * h)
-            assert newW > 0 and newH > 0, 'Scale is too small, resized images would have no pixel'
-            pil_img = pil_img.resize((newW, newH), resample=Image.NEAREST if is_mask else Image.BICUBIC)
-            img = np.asarray(pil_img)
 
             if is_depth:
+
+                w = pil_img.shape[1]
+                h = pil_img.shape[0]
+                newW, newH = int(scale * w), int(scale * h)
+                assert newW > 0 and newH > 0, 'Scale is too small, resized images would have no pixel'
+                pil_img = cv2.resize(pil_img, (newW, newH), interpolation=cv2.INTER_CUBIC)
+                img = np.asarray(pil_img).astype(np.float32)
+            
                 if img.ndim == 2:
                     img = img[np.newaxis, ...]
                 else:
@@ -103,6 +106,13 @@ class BasicDataset(Dataset):
                 return img
 
             if not is_depth:
+
+                w, h = pil_img.size
+                newW, newH = int(scale * w), int(scale * h)
+                assert newW > 0 and newH > 0, 'Scale is too small, resized images would have no pixel'
+                pil_img = pil_img.resize((newW, newH), resample=Image.NEAREST if is_mask else Image.BICUBIC)
+                img = np.asarray(pil_img)
+
                 if img.ndim == 2:
                     img = img[np.newaxis, ...]
                 else:
@@ -120,11 +130,12 @@ class BasicDataset(Dataset):
         mask = np.array(Image.fromarray(mask).resize((int(mask.shape[1] * scale), int(mask.shape[0] * scale),), resample=Image.NEAREST))
         binary_mask = (mask > 0.0001).astype(np.float32)
 
-        w, h = depth.size
+        w = depth.shape[1]
+        h = depth.shape[0]
         newW, newH = int(scale * w), int(scale * h)
         assert newW > 0 and newH > 0, 'Scale is too small, resized images would have no pixel'
-        depth = depth.resize((newW, newH), resample=Image.BICUBIC)
-        depth = np.asarray(depth)
+        depth = cv2.resize(depth, (newW, newH), interpolation=cv2.INTER_CUBIC)
+        depth = np.asarray(depth).astype(np.float32)
         
         assert mask.shape == depth.shape, f'Mask and depth should have the same size, but are {mask.shape} and {depth.shape}'
 
@@ -146,7 +157,7 @@ class BasicDataset(Dataset):
         if self.depth_dir is not None:
             depth_file = list(self.depth_dir.glob(name + '.*'))
             assert len(depth_file) == 1, f'Either no depth image or multiple depth images found for the ID {name}: {depth_file}'
-            depth = load_image(depth_file[0])
+            depth = load_image(depth_file[0], load_depth=True)
             df = self.get_df(mask, depth, self.scale)
             depth = self.preprocess(depth, self.scale, is_mask=False, is_depth=True)
 

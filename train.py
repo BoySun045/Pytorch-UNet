@@ -28,8 +28,8 @@ from torchvision.utils import save_image
 import datetime 
 
 
-dir_path = Path("/media/boysun/Extreme Pro/Actmap_v2_mini")
-# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")
+# dir_path = Path("/media/boysun/Extreme Pro/Actmap_v2_mini")
+dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")
 # dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2_mini")
 # dir_path = Path("/media/boysun/Extreme Pro/one_image_dataset_3")
 dir_img = Path(dir_path / 'image/')
@@ -199,7 +199,7 @@ def train_model(
         reg_ds_factor = 1.0
 ):
     # 1. Create dataset
-    data_augmentation = False
+    data_augmentation = True
     log_transform = log_transform
     if use_depth:
         try:
@@ -223,7 +223,7 @@ def train_model(
     print(f"Train size: {n_train}, Validation size: {n_val}")
 
     # 4. Create data loaders
-    loader_args = dict(batch_size=batch_size, num_workers=16, pin_memory=True)
+    loader_args = dict(batch_size=batch_size, num_workers=32, pin_memory=True)
     train_loader = DataLoader(train_set, shuffle=True, **loader_args)
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 

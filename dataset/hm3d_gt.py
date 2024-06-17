@@ -13,8 +13,9 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 from .get_depth_discontinuity import *
 from scipy.ndimage import distance_transform_edt
+import cv2
 
-def load_image(filename):
+def load_image(filename, load_depth=False):
     ext = splitext(filename)[1]
     if ext == '.npy':
         return Image.fromarray(np.load(filename))
@@ -23,7 +24,13 @@ def load_image(filename):
         return weights
     elif ext in ['.pt', '.pth']:
         return Image.fromarray(torch.load(filename).numpy())
-    else:
+    elif ext in ['.png', '.jpg'] and load_depth:
+        # print("Loading depth image: ", filename)
+        # print("filename type: ", type(filename) )
+        #convert filename to string
+        filename = str(filename)
+        return cv2.imread(filename, cv2.IMREAD_GRAYSCALE)
+    elif ext in ['.png', '.jpg'] and not load_depth:
         return Image.open(filename)
     
 # Log transformation
@@ -73,10 +80,13 @@ def refine_mask(mask_numpy, kernel_size=5, erosion_iterations=1):
     binary_mask = (smoothed_mask > 0.0).astype(np.uint8)
 
     # Create a larger kernel for more aggressive erosion
-    larger_erosion_kernel = np.ones((3, 3), np.uint8)
+    if erosion_iterations > 0:
+        larger_erosion_kernel = np.ones((3, 3), np.uint8)
 
-    # Apply erosion with the larger kernel
-    refined_mask = cv2.erode(binary_mask, larger_erosion_kernel, iterations=erosion_iterations)
+        # Apply erosion with the larger kernel
+        refined_mask = cv2.erode(binary_mask, larger_erosion_kernel, iterations=erosion_iterations)
+    else:
+        refined_mask = binary_mask
 
     return refined_mask
 
@@ -93,10 +103,10 @@ def get_frontier_line_mask(binary_mask, depth_image):
     
     # Threshold for detecting discontinuities
     threshold_max = 1500  # This value might need tuning depending on the depth range
-    threshold_min = 100
+    threshold_min = 50
     discontinuity_mask = detect_discontinuities(magnitude, threshold_max, threshold_min)
 
-    refined_mask = refine_mask(binary_mask, kernel_size=5, erosion_iterations=1)
+    refined_mask = refine_mask(binary_mask, kernel_size=5, erosion_iterations=0)
 
     # the combined mask is the part that both the Unet mask and the discontinuity mask agree on
     combined_mask = np.logical_and(refined_mask, discontinuity_mask)
@@ -108,7 +118,7 @@ def calculate_euclidean_distance_field(binary_grid):
     distance_field = distance_transform_edt(binary_grid == 0)
     return distance_field
 
-def compute_df(mask, depth, line_neighborhood=5):
+def compute_df(mask, depth, line_neighborhood=10):
     fl_mask, _, _ = get_frontier_line_mask(mask, depth)
     distance_field = calculate_euclidean_distance_field(fl_mask)
     distance_field[distance_field > line_neighborhood] = line_neighborhood * 1.1
