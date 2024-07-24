@@ -81,8 +81,9 @@ class TwoHeadUnet(PredictionModel):
             weights=encoder_weights,
         )
 
-        if in_channels == 4:
-            # Modify the first convolutional layer to accept 4 channels
+       
+        # Modify the first convolutional layer to accept 4 channels
+        if in_channels != 3:
             self.encoder.conv1 = self.modify_first_conv(self.encoder.conv1, in_channels)
 
         self.decoder = UnetDecoder(
