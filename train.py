@@ -22,7 +22,7 @@ from unet import UNet, UnetResnet, TwoHeadUnet
 from utils.data_loading import BasicDataset, CarvanaDataset
 from utils.dice_score import dice_loss
 from utils.regression_loss import mse_loss, weighted_mse_loss, mae_loss, weighted_huber_loss, weighted_l1_inverse_loss
-from utils.df_loss import df_in_neighbor_loss
+from utils.df_loss import df_in_neighbor_loss, df_normalized_loss_in_neighbor, l1_loss_fn, denormalize_df
 from utils.utils import downsample_torch_mask
 from torchvision.utils import save_image
 import datetime 
@@ -282,7 +282,8 @@ def train_model(
     pos_weight = torch.tensor([2.0]).to(device)
     loss_fn_cl = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     
-    loss_fn_df = df_in_neighbor_loss
+    # loss_fn_df = df_in_neighbor_loss
+    loss_fn_df = df_normalized_loss_in_neighbor
 
     global_step = 0 
     class_loss_weight = 1.0
@@ -427,7 +428,9 @@ def train_model(
 
                     elif head_mode == 'df':
                         scheduler.step(1 - val_score_df)
-                        wandb_df_pred = df_pred.squeeze(1)
+                        # wandb_df_pred = df_pred.squeeze(1)
+                        # if use normalized df, need to denomalize and vis
+                        wandb_df_pred = denormalize_df(df_pred,df_neighborhood=10).squeeze(1)
                         # binary_mask does not exist in this case, put a dummy tensor
                         wandb_mask_pred = torch.zeros_like(true_masks)
                         binary_mask = torch.zeros_like(true_masks)

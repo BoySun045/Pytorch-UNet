@@ -31,7 +31,29 @@ def df_in_neighbor_loss(input, target, df_neighborhood=10):
     loss = df_loss
 
     return loss
-        
+
+
+def normalize_df(df, df_neighborhood):
+    return -torch.log(df / df_neighborhood + 1e-6)
+
+def denormalize_df(df_norm, df_neighborhood):
+    return torch.exp(-df_norm) * df_neighborhood
+    
+def df_normalized_loss_in_neighbor(input, target, df_neighborhood=10):
+    # use the normalization loss from https://github.com/cvg/DeepLSD/blob/19eafc71d0c8de868f1b2b1f389efc265e07cda1/deeplsd/models/deeplsd.py#L81
+    
+    # first, compute the loss
+    df_loss= l1_loss_fn(input, normalize_df(target, df_neighborhood))
+
+    # and with supervision only on the lines neighborhood
+        # Retrieve the mask of valid pixels
+    valid_mask = (target < df_neighborhood).float()
+    valid_norm = valid_mask.sum()
+
+    df_loss = (df_loss * valid_mask).sum() / valid_norm + 1e-6
+
+    return df_loss
+
 def weighted_mse_loss(input, target, binary_mask_, increase_factor=1.0, avg_using_binary_mask=True):
     """
     Calculate MSE loss weighted by a binary mask, only considering errors where the mask is 1.

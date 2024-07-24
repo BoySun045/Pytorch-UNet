@@ -4,7 +4,7 @@ from tqdm import tqdm
 
 from utils.regression_loss import weighted_mse_loss
 from utils.dice_score import dice_coeff
-from utils.df_loss import df_in_neighbor_loss
+from utils.df_loss import df_in_neighbor_loss, l1_loss_fn, denormalize_df
 from utils.utils import downsample_torch_mask
 
 @torch.inference_mode()
@@ -18,7 +18,7 @@ def evaluate(net, dataloader, device, amp, use_depth=False,
     dice_score = 0
     reg_loss = 0
     df_loss = 0
-    loss_fn_df = df_in_neighbor_loss
+    loss_fn_df = l1_loss_fn
 
     autocast_device = 'cuda' if device.type == 'cuda' else 'cpu'
 
@@ -60,7 +60,8 @@ def evaluate(net, dataloader, device, amp, use_depth=False,
 
             elif head_mode == "df":
                 df_pred = net(image)
-                df_loss += loss_fn_df(df_pred.float().squeeze(1), ds_true_df, df_neighborhood=10)
+                df_pred = denormalize_df(df_pred, df_neighborhood=10)
+                df_loss += loss_fn_df(df_pred.float().squeeze(1), ds_true_df)
                 
     net.train()
     avg_dice_score = dice_score / num_val_batches if dice_score != 0 else 0

@@ -121,7 +121,7 @@ def calculate_euclidean_distance_field(binary_grid):
 def compute_df(mask, depth, line_neighborhood=10):
     fl_mask, _, _ = get_frontier_line_mask(mask, depth)
     distance_field = calculate_euclidean_distance_field(fl_mask)
-    distance_field[distance_field > line_neighborhood] = line_neighborhood * 1.1
+    distance_field[distance_field > line_neighborhood] = line_neighborhood + 1e-3  # Clip the distance field
     return distance_field
 
              
