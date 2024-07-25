@@ -31,7 +31,7 @@ import datetime
 dir_path = Path("/mnt/boysunSSD/Actmap_v2_mini")
 # dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")
 # dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2_mini")
-# dir_path = Path("/media/boysun/Extreme Pro/one_image_dataset_3")
+# dir_path = Path("/mnt/boysunSSD//one_image_dataset_3")
 dir_img = Path(dir_path / 'image/')
 dir_mask = Path(dir_path / 'weighted_mask/')
 # dir_checkpoint = Path(dir_path / 'checkpoints/')

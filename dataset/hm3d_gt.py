@@ -13,7 +13,10 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 from .get_depth_discontinuity import *
 from scipy.ndimage import distance_transform_edt
+from scipy.ndimage import median_filter
 import cv2
+from scipy.spatial import cKDTree
+
 
 def load_image(filename, load_depth=False):
     ext = splitext(filename)[1]
@@ -56,7 +59,7 @@ def refine_mask(mask_numpy, kernel_size=5, erosion_iterations=1):
     Args:
     mask_numpy (numpy array): The input mask image as a numpy array.
     kernel_size (int): Size of the Gaussian kernel for smoothing.
-    erosion_iterations (int): Number of iterations for the erosion operation.
+    erosion_iterations (int): Number of iterations for thfrom scipy.ndimage import median_filtere erosion operation.
 
     Returns:
     numpy array: The refined binary mask as a numpy array.
@@ -79,7 +82,7 @@ def refine_mask(mask_numpy, kernel_size=5, erosion_iterations=1):
     # Convert to binary mask
     binary_mask = (smoothed_mask > 0.0).astype(np.uint8)
 
-    # Create a larger kernel for more aggressive erosion
+    # Create a larger kernel for more aggrfrom scipy.spatial import cKDTreeessive erosion
     if erosion_iterations > 0:
         larger_erosion_kernel = np.ones((3, 3), np.uint8)
 
@@ -100,7 +103,7 @@ def get_frontier_line_mask(binary_mask, depth_image):
 
     grad_x, grad_y = compute_gradients(depth_image)
     magnitude, direction = gradient_magnitude_and_direction(grad_x, grad_y)
-    
+    from scipy.ndimage import median_filter
     # Threshold for detecting discontinuities
     threshold_max = 1500  # This value might need tuning depending on the depth range
     threshold_min = 50
@@ -124,4 +127,75 @@ def compute_df(mask, depth, line_neighborhood=10):
     distance_field[distance_field > line_neighborhood] = line_neighborhood + 1e-3  # Clip the distance field
     return distance_field
 
-             
+
+
+def extend_weight_mask(weight_mask, kernel_size=15):
+    # Pad the weight_mask to handle the borders
+    pad_size = kernel_size // 2
+    padded_mask = np.pad(weight_mask, pad_size, mode='constant', constant_values=0)
+    
+    extended_mask = np.zeros_like(weight_mask)
+
+    # Iterate over each pixel in the weight_mask
+    for y in range(weight_mask.shape[0]):
+        for x in range(weight_mask.shape[1]):
+            # Extract the kernel around the current pixel
+            kernel = padded_mask[y:y + kernel_size, x:x + kernel_size]
+            
+            # Get the non-zero values in the kernel
+            non_zero_values = kernel[kernel > 0]
+            
+            if non_zero_values.size > 0:
+                # Compute the median of the non-zero values
+                median_value = np.median(non_zero_values)
+                extended_mask[y, x] = median_value
+            else:
+                # If no non-zero values, keep the original pixel value
+                extended_mask[y, x] = weight_mask[y, x]
+    
+    return extended_mask
+
+# weight field for weights regression, logis is the same as the distance field
+# def compute_wf(weight_mask, distance_field, line_neighborhood=10):
+#     # for weight field, it takes the value from weigh_mask, if it's coresponing distance field value is less than line_neighborhood
+    
+#     weight_mask = extend_weight_mask(weight_mask)
+#     weight_field = np.zeros_like(distance_field)
+#     weight_field[distance_field < line_neighborhood] = weight_mask[distance_field < line_neighborhood]
+#     return weight_field
+
+def compute_wf(weight_mask, distance_field, line_neighborhood=10, k=5):
+
+    weight_mask = extend_weight_mask(weight_mask)
+
+    # Initialize weight_field
+    weight_field = np.zeros_like(distance_field)
+    weight_field[distance_field < line_neighborhood] = weight_mask[distance_field < line_neighborhood]
+
+    # Identify points that need to be updated
+    mask_update_needed = (distance_field < line_neighborhood) & (weight_field == 0)
+
+    # Create a list of coordinates and their corresponding weights
+    coordinates = np.argwhere(distance_field < line_neighborhood)
+    weights = weight_mask[distance_field < line_neighborhood]
+
+    # Build a k-D tree for efficient nearest neighbor search
+    tree = cKDTree(coordinates)
+
+    # Iterate through each point that needs an update
+    for idx in np.argwhere(mask_update_needed):
+        y, x = idx
+
+        # Query the k nearest neighbors
+        distances, indices = tree.query([y, x], k=k)
+        
+        # Avoid division by zero for distance, add a small epsilon
+        weights_neighbors = weights[indices]
+        distances = np.maximum(distances, 1e-10)
+
+        # Calculate the weighted average
+        weighted_sum = np.sum(weights_neighbors / distances)
+        sum_of_weights = np.sum(1 / distances)
+        weight_field[y, x] = weighted_sum / sum_of_weights
+
+    return weight_field

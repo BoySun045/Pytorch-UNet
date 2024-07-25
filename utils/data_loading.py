@@ -12,7 +12,7 @@ from pathlib import Path
 from torch.utils.data import Dataset
 from tqdm import tqdm
 from utils.data_augmentation import get_transforms, get_static_transforms
-from dataset.hm3d_gt import load_image, log_transform_mask, min_max_scale, compute_df
+from dataset.hm3d_gt import load_image, log_transform_mask, min_max_scale, compute_df, compute_wf
 import cv2
 
 
@@ -141,6 +141,13 @@ class BasicDataset(Dataset):
 
         df = compute_df(binary_mask, depth, df_neighbourhood)
         return df
+    
+    @staticmethod
+    def get_wf(mask, distance_field, scale, wf_neighbourhood=10.0):
+        mask = np.array(mask)
+        mask = np.array(Image.fromarray(mask).resize((int(mask.shape[1] * scale), int(mask.shape[0] * scale),), resample=Image.NEAREST))
+        wf = compute_wf(mask, distance_field, wf_neighbourhood)
+        return wf
 
 
     def __getitem__(self, idx):
@@ -154,19 +161,23 @@ class BasicDataset(Dataset):
         mask = load_image(mask_file[0])
         img = load_image(img_file[0])
 
-        if self.depth_dir is not None:
-            depth_file = list(self.depth_dir.glob(name + '.*'))
-            assert len(depth_file) == 1, f'Either no depth image or multiple depth images found for the ID {name}: {depth_file}'
-            depth = load_image(depth_file[0], load_depth=True)
-            df = self.get_df(mask, depth, self.scale)
-            depth = self.preprocess(depth, self.scale, is_mask=False, is_depth=True)
+        # if self.depth_dir is not None:  # TODO: fix this, we always need depth image
+        depth_file = list(self.depth_dir.glob(name + '.*'))
+        assert len(depth_file) == 1, f'Either no depth image or multiple depth images found for the ID {name}: {depth_file}'
+        depth = load_image(depth_file[0], load_depth=True)
+        df = self.get_df(mask, depth, self.scale)
+        depth = self.preprocess(depth, self.scale, is_mask=False, is_depth=True)
+
+        # get the weight field
+        mask = self.get_wf(mask, df, self.scale)
 
         # assert img.size == mask.size, \
         #     f'Image and mask {name} should be the same size, but are {img.size} and {mask.size}'
 
         img = self.preprocess( img, self.scale, is_mask=False, is_depth=False)
         mask, binary_mask = self.preprocess(mask, self.scale, is_mask=True, is_depth=False, log_transform=self.log_transform)
-
+        
+  
         # data augmentation
         if self.transforms:
             img = np.transpose(img, (1, 2, 0))
