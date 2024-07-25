@@ -28,9 +28,9 @@ from torchvision.utils import save_image
 import datetime 
 
 
-dir_path = Path("/mnt/boysunSSD/Actmap_v2_mini")
-# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")
-# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2_mini")
+# dir_path = Path("/mnt/boysunSSD/Actmap_v2_mini")
+# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")  # actmap_v3 is the one after data balancing cleaning
+dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2_mini")
 # dir_path = Path("/mnt/boysunSSD//one_image_dataset_3")
 dir_img = Path(dir_path / 'image/')
 dir_mask = Path(dir_path / 'weighted_mask/')
@@ -223,7 +223,7 @@ def train_model(
     print(f"Train size: {n_train}, Validation size: {n_val}")
 
     # 4. Create data loaders
-    loader_args = dict(batch_size=batch_size, num_workers=16, pin_memory=True)
+    loader_args = dict(batch_size=batch_size, num_workers=32, pin_memory=True)
     train_loader = DataLoader(train_set, shuffle=True, **loader_args)
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
@@ -392,7 +392,7 @@ def train_model(
                 pbar.set_postfix(**{'loss (batch)': loss.item()})
 
                 # Evaluation round
-                # division_step = (n_train // (5 * batch_size))
+                # division_step = (n_train // (10 * batch_size))
                 division_step = 10
                 if division_step > 0 and global_step % division_step == 0:
                     histograms = {}
@@ -460,7 +460,7 @@ def train_model(
                                  global_step, epoch, histograms, use_depth)
 
 
-        if save_checkpoint and epoch % 20 == 0:
+        if save_checkpoint and epoch % 1 == 0:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
             # state_dict['mask_values'] = dataset.mask_values

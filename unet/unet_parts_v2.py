@@ -155,7 +155,8 @@ class RegressionHead(nn.Sequential):
         # Downsampling layer
         downsample = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=int(1/downsample_factor), padding=1) if downsample_factor != 1 else nn.Identity()
         
-        activation_3 = ScaledTanh()  # Assuming ScaledTanh is the desired activation
+        # activation_3 = ScaledTanh()  
+        activation_3 = nn.ReLU()
         
         super().__init__(conv2d_1, activation_1, batch_norm_1, conv2d_2, activation_2, batch_norm_2, conv2d_3, downsample, activation_3)
 

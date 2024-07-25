@@ -129,7 +129,7 @@ def compute_df(mask, depth, line_neighborhood=10):
 
 
 
-def extend_weight_mask(weight_mask, kernel_size=15):
+def extend_weight_mask(weight_mask, kernel_size=7):
     # Pad the weight_mask to handle the borders
     pad_size = kernel_size // 2
     padded_mask = np.pad(weight_mask, pad_size, mode='constant', constant_values=0)
@@ -156,46 +156,46 @@ def extend_weight_mask(weight_mask, kernel_size=15):
     return extended_mask
 
 # weight field for weights regression, logis is the same as the distance field
-# def compute_wf(weight_mask, distance_field, line_neighborhood=10):
-#     # for weight field, it takes the value from weigh_mask, if it's coresponing distance field value is less than line_neighborhood
+def compute_wf(weight_mask, distance_field, line_neighborhood=10):
+    # for weight field, it takes the value from weigh_mask, if it's coresponing distance field value is less than line_neighborhood
     
-#     weight_mask = extend_weight_mask(weight_mask)
-#     weight_field = np.zeros_like(distance_field)
-#     weight_field[distance_field < line_neighborhood] = weight_mask[distance_field < line_neighborhood]
-#     return weight_field
-
-def compute_wf(weight_mask, distance_field, line_neighborhood=10, k=5):
-
     weight_mask = extend_weight_mask(weight_mask)
-
-    # Initialize weight_field
     weight_field = np.zeros_like(distance_field)
     weight_field[distance_field < line_neighborhood] = weight_mask[distance_field < line_neighborhood]
-
-    # Identify points that need to be updated
-    mask_update_needed = (distance_field < line_neighborhood) & (weight_field == 0)
-
-    # Create a list of coordinates and their corresponding weights
-    coordinates = np.argwhere(distance_field < line_neighborhood)
-    weights = weight_mask[distance_field < line_neighborhood]
-
-    # Build a k-D tree for efficient nearest neighbor search
-    tree = cKDTree(coordinates)
-
-    # Iterate through each point that needs an update
-    for idx in np.argwhere(mask_update_needed):
-        y, x = idx
-
-        # Query the k nearest neighbors
-        distances, indices = tree.query([y, x], k=k)
-        
-        # Avoid division by zero for distance, add a small epsilon
-        weights_neighbors = weights[indices]
-        distances = np.maximum(distances, 1e-10)
-
-        # Calculate the weighted average
-        weighted_sum = np.sum(weights_neighbors / distances)
-        sum_of_weights = np.sum(1 / distances)
-        weight_field[y, x] = weighted_sum / sum_of_weights
-
     return weight_field
+
+# def compute_wf(weight_mask, distance_field, line_neighborhood=10, k=5):
+
+#     weight_mask = extend_weight_mask(weight_mask)
+
+#     # Initialize weight_field
+#     weight_field = np.zeros_like(distance_field)
+#     weight_field[distance_field < line_neighborhood] = weight_mask[distance_field < line_neighborhood]
+
+#     # Identify points that need to be updated
+#     mask_update_needed = (distance_field < line_neighborhood) & (weight_field == 0)
+
+#     # Create a list of coordinates and their corresponding weights
+#     coordinates = np.argwhere(distance_field < line_neighborhood)
+#     weights = weight_mask[distance_field < line_neighborhood]
+
+#     # Build a k-D tree for efficient nearest neighbor search
+#     tree = cKDTree(coordinates)
+
+#     # Iterate through each point that needs an update
+#     for idx in np.argwhere(mask_update_needed):
+#         y, x = idx
+
+#         # Query the k nearest neighbors
+#         distances, indices = tree.query([y, x], k=k)
+        
+#         # Avoid division by zero for distance, add a small epsilon
+#         weights_neighbors = weights[indices]
+#         distances = np.maximum(distances, 1e-10)
+
+#         # Calculate the weighted average
+#         weighted_sum = np.sum(weights_neighbors / distances)
+#         sum_of_weights = np.sum(1 / distances)
+#         weight_field[y, x] = weighted_sum / sum_of_weights
+
+#     return weight_field
