@@ -21,7 +21,7 @@ from evaluate import evaluate
 from unet import UNet, UnetResnet, TwoHeadUnet
 from utils.data_loading import BasicDataset, CarvanaDataset
 from utils.dice_score import dice_loss
-from utils.regression_loss import mse_loss, weighted_mse_loss, mae_loss, weighted_huber_loss, weighted_l1_inverse_loss
+from utils.regression_loss import mse_loss, weighted_mse_loss, masked_f1_loss, weighted_huber_loss, weighted_l1_inverse_loss
 from utils.df_loss import df_in_neighbor_loss, df_normalized_loss_in_neighbor, l1_loss_fn, denormalize_df
 from utils.utils import downsample_torch_mask
 from torchvision.utils import save_image
@@ -31,6 +31,7 @@ import datetime
 # dir_path = Path("/mnt/boysunSSD/Actmap_v2_mini")
 # dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")  # actmap_v3 is the one after data balancing cleaning
 dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2_mini")
+# dir_path = Path("/cluster/project/cvg/boysun/one_image_dataset_3")
 # dir_path = Path("/mnt/boysunSSD//one_image_dataset_3")
 dir_img = Path(dir_path / 'image/')
 dir_mask = Path(dir_path / 'weighted_mask/')
@@ -199,7 +200,7 @@ def train_model(
         reg_ds_factor = 1.0
 ):
     # 1. Create dataset
-    data_augmentation = True
+    data_augmentation = False
     log_transform = log_transform
     if use_depth:
         try:
@@ -274,10 +275,12 @@ def train_model(
     grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
 
     # loss_fn_rg = weighted_mse_loss
-    if reg_loss_type == 'l1_inv':
-        loss_fn_rg = weighted_l1_inverse_loss
-    else:
-        loss_fn_rg = weighted_huber_loss
+    # if reg_loss_type == 'l1_inv':
+    #     loss_fn_rg = weighted_l1_inverse_loss
+    # else:
+    #     loss_fn_rg = weighted_huber_loss
+
+    loss_fn_rg = masked_f1_loss
     
     pos_weight = torch.tensor([2.0]).to(device)
     loss_fn_cl = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
@@ -358,10 +361,14 @@ def train_model(
                         
                     elif head_mode == 'regression':
                         masks_pred = model(images)
-                        reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float(), true_binary_masks.float(), 
-                                              increase_factor=8.0, avg_using_binary_mask=False)
-                        loss = reg_loss
+                        # reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float(), true_binary_masks.float(), 
+                        #                       increase_factor=8.0, avg_using_binary_mask=False)
 
+                        # wf loss
+                        reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float())
+                        loss = reg_loss
+                        
+                        df_loss = None
                         class_loss = None
                     
                     elif head_mode == 'df':
@@ -425,7 +432,9 @@ def train_model(
                         wandb_mask_pred = masks_pred.squeeze(1)
                         # binary_mask does not exist in this case, put a dummy tensor
                         binary_mask = torch.zeros_like(true_masks)
-
+                        
+                        wandb_df_pred = torch.zeros_like(true_masks)
+                        ds_true_df = torch.zeros_like(true_masks)
                     elif head_mode == 'df':
                         scheduler.step(1 - val_score_df)
                         # wandb_df_pred = df_pred.squeeze(1)
@@ -460,7 +469,7 @@ def train_model(
                                  global_step, epoch, histograms, use_depth)
 
 
-        if save_checkpoint and epoch % 1 == 0:
+        if save_checkpoint and epoch % 100 == 0:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
             # state_dict['mask_values'] = dataset.mask_values

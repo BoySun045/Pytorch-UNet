@@ -144,10 +144,10 @@ class RegressionHead(nn.Sequential):
                  kernel_size=3, activation=None, upsampling=1):
         self.downsample_factor = downsample_factor
 
-        conv2d_1 = nn.Conv2d(in_channels, 64, kernel_size=5, padding=2)
+        conv2d_1 = nn.Conv2d(in_channels, 64, kernel_size=kernel_size, padding=kernel_size // 2)
         activation_1 = nn.ReLU()
         batch_norm_1 = nn.BatchNorm2d(64)
-        conv2d_2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        conv2d_2 = nn.Conv2d(64, 64, kernel_size=kernel_size, padding=kernel_size // 2)
         activation_2 = nn.ReLU()
         batch_norm_2 = nn.BatchNorm2d(64)
         conv2d_3 = nn.Conv2d(64, out_channels, kernel_size=1)

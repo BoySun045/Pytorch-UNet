@@ -8,6 +8,8 @@ def mse_loss(input, target):
 def mae_loss(input, target):
     return F.l1_loss(input, target)
 
+def l1_loss_fn(input, target):
+    return F.l1_loss(input, target)
 # def weighted_mse_loss(input, target, increase_factor=2.0):
 
 #     # Generate weight map
@@ -132,6 +134,21 @@ def weighted_mse_loss(input, target, binary_mask_, increase_factor=1.0, avg_usin
     # print("loss: ", loss)
     return loss
 
+def masked_f1_loss(input, target, valid_thresh=2e-6):
+    print("min max target: ", target.min(), target.max())
+    print("min max input: ", input.min(), input.max())
+    # wf_loss = l1_loss_fn(input, target)
+    # square loss
+    wf_loss = (input - target) ** 2
+    valid_mask = (target > valid_thresh).float()
+    valid_norm = valid_mask.sum()
+    print("valid mask shape ", valid_mask.shape)
+    print("num of valid pixels: ", valid_norm)
+
+    wf_loss = (wf_loss * valid_mask).sum() / valid_norm + 1e-6
+
+    return wf_loss
+
 def weighted_huber_loss(input, target, binary_mask_, delta=1.0, increase_factor=5.0, avg_using_binary_mask=True):
     """
     Calculate Huber loss weighted by a binary mask, only considering errors where the mask is 1.
@@ -162,7 +179,6 @@ def weighted_huber_loss(input, target, binary_mask_, delta=1.0, increase_factor=
     weight_map = torch.ones_like(target)
     weight_map[binary_mask > 0] *= increase_factor
     # for the case where the mask is 0, we don't want to pass gradient, so we set the weight to 0
-    epsilon = 1e-5
     weight_map[binary_mask < epsilon] = 0.0
 
     # check if the number of 0 values and 1 values in the binary mask sum up to the total number of pixels

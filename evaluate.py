@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
-from utils.regression_loss import weighted_mse_loss
+from utils.regression_loss import weighted_mse_loss, mae_loss, mse_loss
 from utils.dice_score import dice_coeff
 from utils.df_loss import df_in_neighbor_loss, l1_loss_fn, denormalize_df
 from utils.utils import downsample_torch_mask
@@ -14,7 +14,8 @@ def evaluate(net, dataloader, device, amp, use_depth=False,
     net.eval()
     num_val_batches = len(dataloader)
 
-    loss_fn_rg = weighted_mse_loss
+    # loss_fn_rg = weighted_mse_loss
+    loss_fn_rg = mae_loss
     dice_score = 0
     reg_loss = 0
     df_loss = 0
@@ -51,7 +52,8 @@ def evaluate(net, dataloader, device, amp, use_depth=False,
                 dice_score += dice_coeff((F.sigmoid(binary_pred) > 0.5).float().squeeze(1), true_binary_mask, reduce_batch_first=False)
             elif head_mode == "regression":
                 mask_pred = net(image)
-                reg_loss += loss_fn_rg(mask_pred, mask_true.float(), true_binary_mask.float(), increase_factor=1.0, avg_using_binary_mask=False)
+                # reg_loss += loss_fn_rg(mask_pred, mask_true.float(), true_binary_mask.float(), increase_factor=1.0, avg_using_binary_mask=False)
+                reg_loss += loss_fn_rg(mask_pred, mask_true.float())
             elif head_mode == "both":
                 binary_pred, mask_pred = net(image)
                 dice_score += dice_coeff((F.sigmoid(binary_pred) > 0.5).float().squeeze(1), true_binary_mask, reduce_batch_first=False)

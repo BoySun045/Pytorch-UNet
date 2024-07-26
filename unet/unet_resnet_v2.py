@@ -130,7 +130,7 @@ class TwoHeadUnet(PredictionModel):
                 out_channels=classes,
                 downsample_factor=regression_downsample_factor,
                 activation=activation, # always use relu in the regression class definition
-                kernel_size=5,
+                kernel_size=3,
             )
 
         if head_config == "df":
