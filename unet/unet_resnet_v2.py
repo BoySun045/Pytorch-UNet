@@ -144,6 +144,24 @@ class TwoHeadUnet(PredictionModel):
                 kernel_size=3,
             )
 
+        if head_config == "df_wf":
+            self.segmentation_head = None
+
+            self.df_regression_head = DfRegressionHead(
+                in_channels=decoder_channels[-1],
+                out_channels=classes,
+                downsample_factor=regression_downsample_factor,
+                activation=activation, # always use relu in the regression class definition
+                kernel_size=3,
+            )
+            self.wf_regression_head = RegressionHead(
+                in_channels=decoder_channels[-1],
+                out_channels=classes,
+                downsample_factor=regression_downsample_factor,
+                activation=activation, # always use relu in the regression class definition
+                kernel_size=3,
+            )
+
         self.name = "u-{}".format(encoder_name)
         self.initialize(head_config, df_neighborhood)
 

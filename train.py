@@ -21,7 +21,7 @@ from evaluate import evaluate
 from unet import UNet, UnetResnet, TwoHeadUnet
 from utils.data_loading import BasicDataset, CarvanaDataset
 from utils.dice_score import dice_loss
-from utils.regression_loss import mse_loss, weighted_mse_loss, masked_f1_loss, weighted_huber_loss, weighted_l1_inverse_loss
+from utils.regression_loss import mse_loss, weighted_mse_loss, masked_f1_loss, weighted_huber_loss, reverse_log_transform
 from utils.df_loss import df_in_neighbor_loss, df_normalized_loss_in_neighbor, l1_loss_fn, denormalize_df
 from utils.utils import downsample_torch_mask
 from torchvision.utils import save_image
@@ -29,8 +29,8 @@ import datetime
 
 
 # dir_path = Path("/mnt/boysunSSD/Actmap_v2_mini")
-# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")  # actmap_v3 is the one after data balancing cleaning
-dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2_mini")
+dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")  # actmap_v3 is the one after data balancing cleaning
+# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2_mini")
 # dir_path = Path("/cluster/project/cvg/boysun/one_image_dataset_3")
 # dir_path = Path("/mnt/boysunSSD//one_image_dataset_3")
 dir_img = Path(dir_path / 'image/')
@@ -200,7 +200,7 @@ def train_model(
         reg_ds_factor = 1.0
 ):
     # 1. Create dataset
-    data_augmentation = False
+    data_augmentation = True
     log_transform = log_transform
     if use_depth:
         try:
@@ -268,7 +268,7 @@ def train_model(
     #use adam optimizer
     # optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     if lr_decay:
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=10, factor=0.5, min_lr=5e-6)  # goal: maximize score
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=20, factor=0.5, min_lr=5e-6)  # goal: maximize score
     else:
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=10000000, factor=0.5, min_lr=5e-5)  # goal: minimize loss
     
@@ -378,6 +378,13 @@ def train_model(
                         class_loss = None
                         reg_loss = None
 
+                    elif head_mode == "df_wf":
+                        df_pred, masks_pred = model(images)
+                        reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float())
+                        df_loss = loss_fn_df(df_pred.squeeze(1), ds_true_df)
+                        loss = 0.1*reg_loss + df_loss
+                        class_loss = None
+
 
                 optimizer.zero_grad(set_to_none=True)
                 grad_scaler.scale(loss).backward()
@@ -399,8 +406,8 @@ def train_model(
                 pbar.set_postfix(**{'loss (batch)': loss.item()})
 
                 # Evaluation round
-                # division_step = (n_train // (10 * batch_size))
-                division_step = 10
+                division_step = (n_train // (10 * batch_size))
+                # division_step = 10
                 if division_step > 0 and global_step % division_step == 0:
                     histograms = {}
                     for tag, value in model.named_parameters():
@@ -444,6 +451,12 @@ def train_model(
                         wandb_mask_pred = torch.zeros_like(true_masks)
                         binary_mask = torch.zeros_like(true_masks)
 
+                    elif head_mode == "df_wf":
+                        scheduler.step(1 - val_score_df - 0.1*val_score_rg)
+                        wandb_df_pred = denormalize_df(df_pred,df_neighborhood=10).squeeze(1)
+                        masks_pred = reverse_log_transform(masks_pred)
+                        wandb_mask_pred = masks_pred.squeeze(1) * (wandb_df_pred < 10)
+                        binary_mask = torch.zeros_like(true_masks)
 
                     logging.info(f'Validation Classification Dice score: {val_score_cl}')
                     logging.info(f'Validation Regression mse : {val_score_rg}')
@@ -512,17 +525,12 @@ if __name__ == '__main__':
     # n_channels=4 for RGB-D images
     # n_classes is the number of probabilities you want to get per pixel
     if args.use_depth:
-        # model = UNet(n_channels=4, n_classes=args.classes, bilinear=args.bilinear)
-        # model = UnetResnet(n_classes=args.classes)
-        
         model = TwoHeadUnet(classes=args.classes,
                             in_channels=4,
                             head_config = head_mode,
                             regression_downsample_factor=args.regression_downsample_factor)
         
     else:
-        # model = UNet(n_channels=3, n_classes=args.classes, bilinear=args.bilinear)
-        # model = UnetResnet(n_classes=args.classes)
         model = TwoHeadUnet(classes=args.classes,
                             in_channels=3,
                             head_config = head_mode,

@@ -34,16 +34,13 @@ class PredictionModel(torch.nn.Module):
             init.initialize_head(self.segmentation_head)
         elif head_config == "regression":
             init.initialize_head(self.regression_head)
+        elif head_config == "df_wf":
+            init.initialize_head(self.df_regression_head)
+            init.initialize_head(self.wf_regression_head)
+
         self.head_mode = head_config
         self.df_neighborhood = df_neighborhood
 
-        
-    def normalize_df(self, df):
-        return -torch.log(df / self.df_neighborhood + 1e-6)
-
-    def denormalize_df(self, df_norm):
-        return torch.exp(-df_norm) * self.df_neighborhood
-    
     def check_input_shape(self, x):
 
         h, w = x.shape[-2:]
@@ -96,9 +93,20 @@ class PredictionModel(torch.nn.Module):
             norm_values = self.regression_head(decoder_output)
             if h % self.output_stride != 0 or w % self.output_stride != 0:
                  norm_values = norm_values[:, :, :int(h * self.regression_head.downsample_factor), :int(w * self.regression_head.downsample_factor)]
-            values = self.denormalize_df(norm_values)
-            return values
+            
+            return norm_values
 
+        elif self.head_mode == "df_wf":
+            df = self.df_regression_head(decoder_output)
+            wf = self.wf_regression_head(decoder_output)
+
+            if h % self.output_stride != 0 or w % self.output_stride != 0:
+                 df = df[:, :, :int(h * self.df_regression_head.downsample_factor), :int(w * self.df_regression_head.downsample_factor)]
+                 wf = wf[:, :, :int(h * self.wf_regression_head.downsample_factor), :int(w * self.wf_regression_head.downsample_factor)]
+            
+            return df, wf
+            
+            
     @torch.no_grad()
     def predict(self, x):
         """Inference method. Switch model to `eval` mode, call `.forward(x)` with `torch.no_grad()`

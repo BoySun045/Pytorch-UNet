@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
-from utils.regression_loss import weighted_mse_loss, mae_loss, mse_loss
+from utils.regression_loss import weighted_mse_loss, mae_loss, mse_loss, reverse_log_transform, log_transform
 from utils.dice_score import dice_coeff
 from utils.df_loss import df_in_neighbor_loss, l1_loss_fn, denormalize_df
 from utils.utils import downsample_torch_mask
@@ -64,7 +64,14 @@ def evaluate(net, dataloader, device, amp, use_depth=False,
                 df_pred = net(image)
                 df_pred = denormalize_df(df_pred, df_neighborhood=10)
                 df_loss += loss_fn_df(df_pred.float().squeeze(1), ds_true_df)
-                
+            
+            elif head_mode == "df_wf":
+                df_pred, mask_pred = net(image)
+                df_pred = denormalize_df(df_pred, df_neighborhood=10)
+                df_loss += loss_fn_df(df_pred.float().squeeze(1), ds_true_df)
+                mask_true_log = log_transform(mask_true)
+                reg_loss += loss_fn_rg(mask_pred, mask_true_log.float())
+
     net.train()
     avg_dice_score = dice_score / num_val_batches if dice_score != 0 else 0
     avg_reg_loss = reg_loss / num_val_batches if reg_loss != 0 else 0

@@ -62,12 +62,12 @@ class BasicDataset(Dataset):
             
             if log_transform:
                 mask = np.clip(mask, mask_weight_global_min, mask_weight_global_max)
-                mask_log = log_transform_mask(mask)
+                # mask_log = log_transform_mask(mask)   # log transform move to the loss calculation part
                 # mask_log_max = np.log1p(mask_weight_global_max)
                 # mask_log_min = np.log1p(mask_weight_global_min)
                 # mask = min_max_scale(mask_log, mask_log_min, mask_log_max)
                 # mask = np.clip(mask, 0, 1)
-                mask = mask_log
+                # mask = mask_log
                 # print("mask min max: ", mask.min(), mask.max())
             
             else:

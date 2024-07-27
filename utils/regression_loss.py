@@ -134,11 +134,20 @@ def weighted_mse_loss(input, target, binary_mask_, increase_factor=1.0, avg_usin
     # print("loss: ", loss)
     return loss
 
+def log_transform(y): 
+    # log1p(x) = log(1 + x)
+    return torch.log1p(y)
+
+def reverse_log_transform(y):
+    # expm1(x) = exp(x) - 1
+    return torch.expm1(y)
+
 def masked_f1_loss(input, target, valid_thresh=2e-6):
     print("min max target: ", target.min(), target.max())
     print("min max input: ", input.min(), input.max())
     # wf_loss = l1_loss_fn(input, target)
     # square loss
+    target = log_transform(target)
     wf_loss = (input - target) ** 2
     valid_mask = (target > valid_thresh).float()
     valid_norm = valid_mask.sum()
