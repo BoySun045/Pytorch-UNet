@@ -229,7 +229,7 @@ def train_model(
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
     # (Initialize logging)
-    experiment = wandb.init(project='U-Net-resnet-v2-debug', resume='allow', anonymous='must')
+    experiment = wandb.init(project='U-Net-resnet-v3', resume='allow', anonymous='must')
     experiment.config.update(
         dict(epochs=epochs, 
              batch_size=batch_size, 
@@ -268,7 +268,7 @@ def train_model(
     #use adam optimizer
     # optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     if lr_decay:
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=20, factor=0.5, min_lr=5e-6)  # goal: maximize score
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=10, factor=0.5, min_lr=5e-6)  # goal: maximize score
     else:
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=10000000, factor=0.5, min_lr=5e-5)  # goal: minimize loss
     
@@ -382,7 +382,7 @@ def train_model(
                         df_pred, masks_pred = model(images)
                         reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float())
                         df_loss = loss_fn_df(df_pred.squeeze(1), ds_true_df)
-                        loss = 0.1*reg_loss + df_loss
+                        loss = reg_loss_weight*reg_loss + df_loss
                         class_loss = None
 
 
@@ -452,7 +452,7 @@ def train_model(
                         binary_mask = torch.zeros_like(true_masks)
 
                     elif head_mode == "df_wf":
-                        scheduler.step(1 - val_score_df - 0.1*val_score_rg)
+                        scheduler.step(1 - val_score_df - reg_loss_weight*val_score_rg)
                         wandb_df_pred = denormalize_df(df_pred,df_neighborhood=10).squeeze(1)
                         masks_pred = reverse_log_transform(masks_pred)
                         wandb_mask_pred = masks_pred.squeeze(1) * (wandb_df_pred < 10)
@@ -482,7 +482,7 @@ def train_model(
                                  global_step, epoch, histograms, use_depth)
 
 
-        if save_checkpoint and epoch % 100 == 0:
+        if save_checkpoint and epoch % 1 == 0:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
             # state_dict['mask_values'] = dataset.mask_values

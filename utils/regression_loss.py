@@ -143,16 +143,16 @@ def reverse_log_transform(y):
     return torch.expm1(y)
 
 def masked_f1_loss(input, target, valid_thresh=2e-6):
-    print("min max target: ", target.min(), target.max())
-    print("min max input: ", input.min(), input.max())
+    # print("min max target: ", target.min(), target.max())
+    # print("min max input: ", input.min(), input.max())
     # wf_loss = l1_loss_fn(input, target)
     # square loss
     target = log_transform(target)
     wf_loss = (input - target) ** 2
     valid_mask = (target > valid_thresh).float()
     valid_norm = valid_mask.sum()
-    print("valid mask shape ", valid_mask.shape)
-    print("num of valid pixels: ", valid_norm)
+    # print("valid mask shape ", valid_mask.shape)
+    # print("num of valid pixels: ", valid_norm)
 
     wf_loss = (wf_loss * valid_mask).sum() / valid_norm + 1e-6
 

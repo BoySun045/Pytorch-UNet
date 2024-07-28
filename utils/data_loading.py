@@ -11,7 +11,7 @@ from os.path import splitext, isfile, join
 from pathlib import Path
 from torch.utils.data import Dataset
 from tqdm import tqdm
-from utils.data_augmentation import get_transforms, get_static_transforms
+from utils.data_augmentation import get_transforms, get_static_transforms, get_appearance_transforms
 from dataset.hm3d_gt import load_image, log_transform_mask, min_max_scale, compute_df, compute_wf
 import cv2
 
@@ -40,6 +40,7 @@ class BasicDataset(Dataset):
 
         # data augmentation
         self.transforms = get_transforms() if data_augmentation else get_static_transforms()
+        self.img_app_transforms = get_appearance_transforms() if data_augmentation else None
         print("if do data augmentation: ", data_augmentation)
 
         # 
@@ -203,6 +204,14 @@ class BasicDataset(Dataset):
                 depth = augmented['depth']
                 df = augmented['df']
                 df = np.transpose(df, (2, 0, 1)).squeeze() if df.ndim == 3 else df.squeeze(-1)
+
+            if self.img_app_transforms is not None:
+                # do appearance transform only for img
+                    # Convert img back to numpy array for appearance transforms
+                img = img.cpu().numpy().transpose(1, 2, 0)  # Ensure it is a numpy array in HWC format
+                img = img.astype(np.float32)
+                sample_ = {'image': img}
+                img = self.img_app_transforms(**sample_)['image']
 
             # Transpose back to (C, H, W)
             # print(img.shape, mask.shape, binary_mask.shape)
