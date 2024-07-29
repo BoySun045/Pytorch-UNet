@@ -15,6 +15,8 @@ from utils.data_augmentation import get_transforms, get_static_transforms, get_a
 from dataset.hm3d_gt import load_image, log_transform_mask, min_max_scale, compute_df, compute_wf
 import cv2
 
+# mono depth 
+from mono_depth.Depth_Anything.mono_predict import pred_from_img, load_model
 
 
 class BasicDataset(Dataset):

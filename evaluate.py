@@ -27,14 +27,13 @@ def evaluate(net, dataloader, device, amp, use_depth=False,
         for batch in tqdm(dataloader, total=num_val_batches, desc='Validation round', unit='batch', leave=False):
             image, mask_true = batch['image'], batch['mask']
             true_binary_mask = batch['binary_mask']
+            depth = batch['depth']
+            df = batch['df']
 
-            if use_depth and not only_depth:
-                depth = batch['depth']
+            if use_depth and not only_depth:    
                 image = torch.cat((image, depth), dim=1)
-                df = batch['df']
             elif use_depth and only_depth:
                 image = batch['depth']
-                df = batch['df']
             elif not use_depth and only_depth:
                 raise ValueError('Cannot use only_depth without use_depth')
 

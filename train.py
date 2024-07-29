@@ -29,8 +29,8 @@ import datetime
 
 
 # dir_path = Path("/mnt/boysunSSD/Actmap_v2_mini")
-dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")  # actmap_v3 is the one after data balancing cleaning
-# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2_mini")
+# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")  # actmap_v3 is the one after data balancing cleaning
+dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2_mini")
 # dir_path = Path("/cluster/project/cvg/boysun/one_image_dataset_3")
 # dir_path = Path("/mnt/boysunSSD//one_image_dataset_3")
 dir_img = Path(dir_path / 'image/')
@@ -75,7 +75,7 @@ def plot_images(wandb_rgb, wandb_depth,
                  wandb_mask_pred, binary_mask, 
                  wandb_df_pred, ds_true_df,
                  error_map, use_depth):
-    num_cols = 5 if use_depth else 4
+    num_cols = 5 
     fig, axes = plt.subplots(2, num_cols, figsize=(20, 8))
     
     # RGB image
@@ -85,11 +85,11 @@ def plot_images(wandb_rgb, wandb_depth,
 
     idx_offset = 1
     # Depth image (if applicable)
-    if use_depth:
-        axes[0, 1].imshow(wandb_depth[0].cpu().detach().numpy(), cmap='gray')
-        axes[0, 1].set_title('Depth Image')
-        axes[0, 1].axis('on')
-        idx_offset += 1
+    axes[0, 1].imshow(wandb_depth[0].cpu().detach().numpy(), cmap='gray')
+    title = 'Depth Image ' if use_depth else 'Depth Image(Not Used)'
+    axes[0, 1].set_title(title)
+    axes[0, 1].axis('on')
+    idx_offset += 1
 
     # True mask as heatmap
     axes[0, idx_offset].imshow(true_masks[0].cpu().detach().numpy(), cmap='viridis')
@@ -202,16 +202,17 @@ def train_model(
     # 1. Create dataset
     data_augmentation = True
     log_transform = log_transform
-    if use_depth:
-        try:
-            dataset = CarvanaDataset(dir_img, dir_mask,dir_depth, img_scale, data_augmentation=data_augmentation, log_transform=log_transform)
-        except (AssertionError, RuntimeError, IndexError):
-            dataset = BasicDataset(dir_img, dir_mask, dir_depth, img_scale, data_augmentation=data_augmentation, log_transform=log_transform)
-    else:
-        try:
-            dataset = CarvanaDataset(dir_img, dir_mask, None, img_scale, data_augmentation=data_augmentation, log_transform=log_transform)
-        except (AssertionError, RuntimeError, IndexError):
-            dataset = BasicDataset(dir_img, dir_mask, None,img_scale, data_augmentation=data_augmentation, log_transform=log_transform)
+    # if use_depth:
+    # Always load depth, but only use it if set 
+    try:
+        dataset = CarvanaDataset(dir_img, dir_mask,dir_depth, img_scale, data_augmentation=data_augmentation, log_transform=log_transform)
+    except (AssertionError, RuntimeError, IndexError):
+        dataset = BasicDataset(dir_img, dir_mask, dir_depth, img_scale, data_augmentation=data_augmentation, log_transform=log_transform)
+    # else:
+    #     try:
+    #         dataset = CarvanaDataset(dir_img, dir_mask, None, img_scale, data_augmentation=data_augmentation, log_transform=log_transform)
+    #     except (AssertionError, RuntimeError, IndexError):
+    #         dataset = BasicDataset(dir_img, dir_mask, None,img_scale, data_augmentation=data_augmentation, log_transform=log_transform)
 
     # 2. Subset the dataset
     total_size = int(len(dataset) * dataset_portion)
@@ -302,28 +303,18 @@ def train_model(
 
                 true_masks, true_binary_masks = batch['mask'], batch['binary_mask']
                 true_df = batch['df']
+                images, depth = batch['image'],batch['depth']
 
-                if not use_depth:
-                    images = batch['image']
-                    # assert images.shape[1] == model.n_channels, \
-                    assert images.shape[1] == 3, \
-                        f'Network has been defined with {3} input channels, ' \
-                        f'but loaded images have {images.shape[1]} channels. Please check that ' \
-                        'the images are loaded correctly.'
+                # assert images.shape[1] + depth.shape[1] == model.n_channels, \
+                assert images.shape[1] + depth.shape[1] == 4, \
+                    f'Network has been defined with {4} input channels, ' \
+                    f'but loaded images have {images.shape[1]} channels. Please check that ' \
+                    'the images are loaded correctly.'
 
-                    images = images.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
-                else: 
-                    images, depth = batch['image'],batch['depth']
+                images = images.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
+                depth = depth.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
 
-                    # assert images.shape[1] + depth.shape[1] == model.n_channels, \
-                    assert images.shape[1] + depth.shape[1] == 4, \
-                        f'Network has been defined with {4} input channels, ' \
-                        f'but loaded images have {images.shape[1]} channels. Please check that ' \
-                        'the images are loaded correctly.'
-
-                    images = images.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
-                    depth = depth.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
-                    images = torch.cat([images, depth], dim=1)
+                images = torch.cat([images, depth], dim=1) if use_depth else images
 
                 true_masks = true_masks.to(device=device, dtype=torch.float32)
                 true_binary_masks = true_binary_masks.to(device=device, dtype=torch.float32)
@@ -464,14 +455,7 @@ def train_model(
 
                     # since image could be 4 channels, we need to convert it to 3 channels to get the rgb image
                     wandb_rgb = images[:, :3, :, :]
-                    wandb_depth = images[:, -1, :, :] if use_depth else None # depth is the last channel
-        
-                    # log_images(experiment, optimizer, 
-                    #            val_score_cl, val_score_rg, 
-                    #            wandb_rgb, wandb_depth,
-                    #            true_masks, true_binary_masks, 
-                    #            wandb_mask_pred, binary_mask, 
-                    #            global_step, epoch, histograms, use_depth)
+                    wandb_depth = depth.squeeze(1)
         
                     log_images(experiment, optimizer,
                                  val_score_cl, val_score_rg, val_score_df,
@@ -485,7 +469,6 @@ def train_model(
         if save_checkpoint and epoch % 1 == 0:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
-            # state_dict['mask_values'] = dataset.mask_values
             use_depth_str = 'depth' if use_depth else 'no_depth'
             reg_weights = str(reg_loss_weight)
             torch.save(state_dict, str(dir_checkpoint / f'CP_epoch{epoch}_{use_depth_str}_{reg_weights}.pth'))
@@ -507,6 +490,7 @@ def get_args():
     parser.add_argument('--classes', '-c', type=int, default=1, help='Number of classes')
     parser.add_argument('--reg_loss_weight', '-rw', type=float, default=1.0, help='Weight of regression loss')
     parser.add_argument('--use_depth','-ud', action='store_true', default=False, help='Use depth image')
+    parser.add_argument('--use_mono_depth','-umd', action='store_true', default=False, help='Use mono depth image')
     parser.add_argument('--head_mode', type=str, default='segmentation', help='both or segmentation or regression')
     parser.add_argument('--regression_downsample_factor','-rdf', type=float, default=1.0, help='Downsample factor for regression head')
     return parser.parse_args()
