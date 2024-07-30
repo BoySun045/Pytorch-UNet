@@ -148,7 +148,7 @@ def masked_f1_loss(input, target, valid_thresh=2e-6):
     # wf_loss = l1_loss_fn(input, target)
     # square loss
     target = log_transform(target)
-    wf_loss = (input - target) ** 2
+    wf_loss = l1_loss_fn(input, target)
     valid_mask = (target > valid_thresh).float()
     valid_norm = valid_mask.sum()
     # print("valid mask shape ", valid_mask.shape)

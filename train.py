@@ -226,7 +226,7 @@ def train_model(
     print(f"Train size: {n_train}, Validation size: {n_val}")
 
     # 4. Create data loaders
-    loader_args = dict(batch_size=batch_size, num_workers=32, pin_memory=True)
+    loader_args = dict(batch_size=batch_size, num_workers=16, pin_memory=True)
     train_loader = DataLoader(train_set, shuffle=True, **loader_args)
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
@@ -271,7 +271,7 @@ def train_model(
     #use adam optimizer
     # optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     if lr_decay:
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=10, factor=0.5, min_lr=5e-6)  # goal: maximize score
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=20, factor=0.5, min_lr=5e-6)  # goal: maximize score
     else:
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=10000000, factor=0.5, min_lr=5e-5)  # goal: minimize loss
     
@@ -411,7 +411,8 @@ def train_model(
                             histograms['Gradients/' + tag] = wandb.Histogram(value.grad.data.cpu())
 
                     val_score_cl, val_score_rg, val_score_df = evaluate(model, val_loader, device, amp, 
-                                                          use_depth=use_depth, head_mode = head_mode,
+                                                          use_depth=use_depth, use_mono_depth = use_mono_depth,
+                                                          head_mode = head_mode,
                                                           reg_ds_factor=reg_ds_factor)
 
                     if head_mode == 'both':
@@ -468,7 +469,7 @@ def train_model(
                                  global_step, epoch, histograms, use_depth)
 
 
-        if save_checkpoint and epoch % 1 == 0:
+        if save_checkpoint and epoch % 10 == 0:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
             use_depth_str = 'depth' if use_depth else 'no_depth'

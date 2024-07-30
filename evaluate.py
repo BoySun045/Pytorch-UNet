@@ -9,7 +9,7 @@ from utils.utils import downsample_torch_mask
 
 @torch.inference_mode()
 def evaluate(net, dataloader, device, amp, use_depth=False, 
-             only_depth=False, head_mode="segmentation",
+             use_mono_depth=False, head_mode="segmentation",
              reg_ds_factor=1.0):
     net.eval()
     num_val_batches = len(dataloader)
@@ -27,15 +27,11 @@ def evaluate(net, dataloader, device, amp, use_depth=False,
         for batch in tqdm(dataloader, total=num_val_batches, desc='Validation round', unit='batch', leave=False):
             image, mask_true = batch['image'], batch['mask']
             true_binary_mask = batch['binary_mask']
-            depth = batch['depth']
+            depth = batch['depth'] if not use_mono_depth else batch['mono_depth']
             df = batch['df']
 
-            if use_depth and not only_depth:    
+            if use_depth:    
                 image = torch.cat((image, depth), dim=1)
-            elif use_depth and only_depth:
-                image = batch['depth']
-            elif not use_depth and only_depth:
-                raise ValueError('Cannot use only_depth without use_depth')
 
             image = image.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
             mask_true = mask_true.to(device=device, dtype=torch.float32)
@@ -66,6 +62,7 @@ def evaluate(net, dataloader, device, amp, use_depth=False,
             
             elif head_mode == "df_wf":
                 df_pred, mask_pred = net(image)
+                print("df pred")
                 df_pred = denormalize_df(df_pred, df_neighborhood=10)
                 df_loss += loss_fn_df(df_pred.float().squeeze(1), ds_true_df)
                 mask_true_log = log_transform(mask_true)

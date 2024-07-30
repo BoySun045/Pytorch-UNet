@@ -153,7 +153,7 @@ class BasicDataset(Dataset):
         return df
     
     @staticmethod
-    def get_wf(mask, distance_field, scale, wf_neighbourhood=10.0):
+    def get_wf(mask, distance_field, scale, wf_neighbourhood=1.0):
         mask = np.array(mask)
         mask = np.array(Image.fromarray(mask).resize((int(mask.shape[1] * scale), int(mask.shape[0] * scale),), resample=Image.NEAREST))
         wf = compute_wf(mask, distance_field, wf_neighbourhood)
@@ -189,7 +189,7 @@ class BasicDataset(Dataset):
         mask, binary_mask = self.preprocess(mask, self.scale, is_mask=True, is_depth=False, log_transform=self.log_transform)
         
         # get the weight field
-        mask = self.get_wf(mask, df, 1.0) # scale does not need to be changed here since previous preprocess already did resize
+        mask = self.get_wf(mask, df, 1.0, 10.0) # scale does not need to be changed here since previous preprocess already did resize
   
         # data augmentation
         if self.transforms:

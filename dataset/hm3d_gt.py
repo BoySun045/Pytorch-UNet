@@ -13,7 +13,7 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 from .get_depth_discontinuity import *
 from scipy.ndimage import distance_transform_edt
-from scipy.ndimage import median_filter
+from scipy.ndimage import median_filter, grey_dilation, binary_dilation
 import cv2
 from scipy.spatial import cKDTree
 
@@ -129,73 +129,45 @@ def compute_df(mask, depth, line_neighborhood=10):
 
 
 
-def extend_weight_mask(weight_mask, kernel_size=7):
-    # Pad the weight_mask to handle the borders
-    pad_size = kernel_size // 2
-    padded_mask = np.pad(weight_mask, pad_size, mode='constant', constant_values=0)
+# def extend_weight_mask(weight_mask, kernel_size=7):
+#     # Pad the weight_mask to handle the borders
+#     pad_size = kernel_size // 2
+#     padded_mask = np.pad(weight_mask, pad_size, mode='constant', constant_values=0)
     
-    extended_mask = np.zeros_like(weight_mask)
+#     extended_mask = np.zeros_like(weight_mask)
 
-    # Iterate over each pixel in the weight_mask
-    for y in range(weight_mask.shape[0]):
-        for x in range(weight_mask.shape[1]):
-            # Extract the kernel around the current pixel
-            kernel = padded_mask[y:y + kernel_size, x:x + kernel_size]
+#     # Iterate over each pixel in the weight_mask
+#     for y in range(weight_mask.shape[0]):
+#         for x in range(weight_mask.shape[1]):
+#             # Extract the kernel around the current pixel
+#             kernel = padded_mask[y:y + kernel_size, x:x + kernel_size]
             
-            # Get the non-zero values in the kernel
-            non_zero_values = kernel[kernel > 0]
+#             # Get the non-zero values in the kernel
+#             non_zero_values = kernel[kernel > 0]
             
-            if non_zero_values.size > 0:
-                # Compute the median of the non-zero values
-                median_value = np.median(non_zero_values)
-                extended_mask[y, x] = median_value
-            else:
-                # If no non-zero values, keep the original pixel value
-                extended_mask[y, x] = weight_mask[y, x]
+#             if non_zero_values.size > 0:
+#                 # Compute the median of the non-zero values
+#                 median_value = np.median(non_zero_values)
+#                 extended_mask[y, x] = median_value
+#             else:
+#                 # If no non-zero values, keep the original pixel value
+#                 extended_mask[y, x] = weight_mask[y, x]
+    
+#     return extended_mask
+
+
+def extend_weight_mask(weight_mask, kernel_size=9):
+    # Create a structuring element (a larger one for more aggressive growth)
+    structuring_element = np.ones((kernel_size, kernel_size))
+    
+    # Apply grey dilation to grow the regions aggressively
+    extended_mask = grey_dilation(weight_mask, footprint=structuring_element)
     
     return extended_mask
 
-# weight field for weights regression, logis is the same as the distance field
 def compute_wf(weight_mask, distance_field, line_neighborhood=10):
     # for weight field, it takes the value from weigh_mask, if it's coresponing distance field value is less than line_neighborhood
     
     weight_mask = extend_weight_mask(weight_mask)
-    weight_field = np.zeros_like(distance_field)
-    weight_field[distance_field < line_neighborhood] = weight_mask[distance_field < line_neighborhood]
-    return weight_field
-
-# def compute_wf(weight_mask, distance_field, line_neighborhood=10, k=5):
-
-#     weight_mask = extend_weight_mask(weight_mask)
-
-#     # Initialize weight_field
-#     weight_field = np.zeros_like(distance_field)
-#     weight_field[distance_field < line_neighborhood] = weight_mask[distance_field < line_neighborhood]
-
-#     # Identify points that need to be updated
-#     mask_update_needed = (distance_field < line_neighborhood) & (weight_field == 0)
-
-#     # Create a list of coordinates and their corresponding weights
-#     coordinates = np.argwhere(distance_field < line_neighborhood)
-#     weights = weight_mask[distance_field < line_neighborhood]
-
-#     # Build a k-D tree for efficient nearest neighbor search
-#     tree = cKDTree(coordinates)
-
-#     # Iterate through each point that needs an update
-#     for idx in np.argwhere(mask_update_needed):
-#         y, x = idx
-
-#         # Query the k nearest neighbors
-#         distances, indices = tree.query([y, x], k=k)
-        
-#         # Avoid division by zero for distance, add a small epsilon
-#         weights_neighbors = weights[indices]
-#         distances = np.maximum(distances, 1e-10)
-
-#         # Calculate the weighted average
-#         weighted_sum = np.sum(weights_neighbors / distances)
-#         sum_of_weights = np.sum(1 / distances)
-#         weight_field[y, x] = weighted_sum / sum_of_weights
-
-#     return weight_field
+    weight_mask[distance_field > line_neighborhood] = 0
+    return weight_mask
