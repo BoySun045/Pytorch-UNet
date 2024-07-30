@@ -13,14 +13,17 @@ from unet import UNet, UnetResnet, TwoHeadUnet
 from utils.utils import plot_img_and_mask
 import cv2
 import albumentations as A
-from utils.df_to_line import df_to_linemap
+from utils.pred_to_line import df_to_linemap, df_wf_to_linemap
 
 def predict_img(net,
                 full_img,
                 depth_img,
                 device,
-                scale_factor=1,
-                out_threshold=0.5):
+                scale_factor = 0.5,
+                out_threshold=0.5,
+                use_depth=True):
+    
+
     net.eval()
     img = torch.from_numpy(BasicDataset.preprocess( full_img, scale_factor, is_mask=False))
     img = img.unsqueeze(0)
@@ -30,20 +33,17 @@ def predict_img(net,
     depth = depth.unsqueeze(0)
     depth = depth.to(device=device, dtype=torch.float32)
 
+    
     # do a center crop to both image
     center_crop = transforms.CenterCrop((320, 320))
     img = center_crop(img)
     depth = center_crop(depth)
 
-    imgs = torch.cat((img, depth), dim=1)
+    imgs = torch.cat((img, depth), dim=1) if use_depth else img
 
     with torch.no_grad():
         result = net(imgs)        
-        # binary_mask = F.sigmoid(binary_pred.squeeze(1))> out_threshold
 
-    # reverse the weighted mask
-    # masks_pred = reverse_weighted_mask(masks_pred)
-    # return masks_pred[0].float().squeeze().cpu().numpy(), binary_mask[0].long().squeeze().cpu().numpy()
     return result
 
 
@@ -54,16 +54,13 @@ def get_args():
     parser.add_argument('--input', '-i', metavar='INPUT', help='Filenames of input images', required=True, type=str)
     parser.add_argument('--output', '-o', metavar='OUTPUT', help='Filenames of output images')
     parser.add_argument('--save_overlay_output', '-so', metavar='SAVE_OVERLAY', help='Filenames of overlay images')
-    parser.add_argument('--viz', '-v', action='store_true',
-                        help='Visualize the images as they are processed')
-    parser.add_argument('--no-save', '-n', action='store_true', help='Do not save the output masks')
+    parser.add_argument('--scale', '-s', type=float, default=0.5)
     parser.add_argument('--mask-threshold', '-t', type=float, default=0.5,
                         help='Minimum probability value to consider a mask pixel white')
-    parser.add_argument('--scale', '-s', type=float, default=1.0,
-                        help='Scale factor for the input images')
     parser.add_argument('--bilinear', action='store_true', default=False, help='Use bilinear upsampling')
     parser.add_argument('--classes', '-c', type=int, default=1, help='Number of classes')
     parser.add_argument('--use_depth', '-d', action='store_true', help='Use depth images')
+    parser.add_argument('--use_mono_depth', '-md', action='store_true', help='Use monodepth images')
     parser.add_argument('--head_mode', '-hm', type=str, default='segmentation', help='both or segmentation or regression')
     parser.add_argument('--regression_downsample_factor','-rdf', type=float, default=1.0, help='Downsample factor for regression head')
 
@@ -122,7 +119,7 @@ if __name__ == '__main__':
 
     if args.use_depth:
         # depth file is in the same directory as the image file but with a different name, depth
-        depth_files = in_files.replace('image', 'depth')
+        depth_files = in_files.replace('image', 'depth') if not args.use_mono_depth else in_files.replace('image', 'mono')
 
     if not os.path.exists(out_files):
         os.makedirs(out_files)
@@ -186,14 +183,12 @@ if __name__ == '__main__':
                            depth_img=depth,
                            scale_factor=args.scale,
                            out_threshold=args.mask_threshold,
-                           device=device)
+                           device=device,
+                           use_depth=args.use_depth)
         
         if head_mode == 'df':
             # prediction is a distance field
             df_pred = result[0].squeeze(0).squeeze(0).cpu().numpy()
-            # print("df_pred shape: ", df_pred.shape)
-            # print("df_pred max: ", df_pred.max())
-            # print("df_pred min: ", df_pred.min())
             line_map = df_to_linemap(df_pred, threshold=0.45)
             # save the distance field as a heatmap image
             out_filename = out_imgs[i]
@@ -209,19 +204,63 @@ if __name__ == '__main__':
             out_overlay_filename = out_overlay_imgs[i]
             cv2.imwrite(out_overlay_filename, line_map)
             logging.info(f'Line map saved to {out_overlay_filename}')
+        
+        if head_mode == "df_wf":
+            df_pred = result[0]
+            wf_pred = result[1]
+
+            weighted_map = df_wf_to_linemap(df=df_pred, wf=wf_pred, 
+                                            df_neighborhood=10, threshold=5.0)
+            
+            global_max = 3000.0
+            global_min = 1e-6
+
+            # normalize the weighted map using min-max scaling, and use global min and max
+            weighted_map = (weighted_map - global_min) / (global_max - global_min) * 255
+
+            # self-normalize the weighted map
+            weighted_map = (weighted_map - weighted_map.min()) / (weighted_map.max() - weighted_map.min()) * 255
+
+            # get a heatmap from the weighted map, 
+            # the higher the value, the more bright yellow the pixel
+            # the lower the value, the more dark black the pixel
+            heatmap = cv2.applyColorMap(np.uint8(weighted_map), cv2.COLORMAP_HOT)
+
+            # overlay the heatmap to the original image
+            # first, need to get the same size as the original image, which is first resize and then center crop
+            # first, resize using args.scale
+            # then, center crop to 320x320
+            print("img size: ", img.size)
+            vis_img = img.resize((int(img.width * args.scale), int(img.height * args.scale)), Image.BILINEAR)
+            # then do numpy center crop
+            print("vis_img size: ", vis_img.size)
+            center_crop = transforms.CenterCrop((320, 320))
+            vis_img = center_crop(vis_img)
+            print("vis_img size after center crop: ", vis_img.size)
+            print("heatmap size: ", heatmap.shape)
+            vis_img = np.array(vis_img)
+            # this is currently BGR image, convert to RGB
+            vis_img = cv2.cvtColor(vis_img, cv2.COLOR_BGR2RGB)
+            # overlay the heatmap to the original image
+            overlay_img = cv2.addWeighted(vis_img, 0.5, heatmap, 0.5, 0)
+            cv2.imwrite(out_overlay_imgs[i], overlay_img)
+            logging.info(f'Overlay image saved to {out_overlay_imgs[i]}')
             
 
-        # # overlay the mask on the image
-        # overlay_img = overlay_img_with_mask(img, mask)
+            # line_map = df_to_linemap(df_pred, df_neighborhood=10, threshold=0.45)
+            # # save the distance field as a heatmap image
+            # out_filename = out_imgs[i]
+            # # normalize the distance field to 0-255
+            # df_pred = df_pred.squeeze().cpu().numpy()
+            # df_pred = (df_pred - df_pred.min()) / (df_pred.max() - df_pred.min()) * 255
+            # # convert the distance field to a heatmap image
+            # heatmap = cv2.applyColorMap(np.uint8(df_pred), cv2.COLORMAP_VIRIDIS)
+            # cv2.imwrite(out_filename, heatmap)
+            # logging.info(f'Distance field saved to {out_filename}')
 
-        # if not args.no_save:
-        #     out_filename = out_imgs[i]
-        #     result = mask_to_image(mask, mask_values)
-        #     result.save(out_filename)
-        #     out_overlay_filename = out_overlay_imgs[i]
-        #     overlay_img.save(out_overlay_filename)
-        #     logging.info(f'Mask saved to {out_filename}')
+            # # print number of positive pixels in the line map
+            # line_map[line_map == 1] = 255
+            # out_overlay_filename = out_overlay_imgs[i]
+            # cv2.imwrite(out_overlay_filename, line_map)
+            # logging.info(f'Line map saved to {out_overlay_filename}')
 
-        # if args.viz:
-        #     logging.info(f'Visualizing results for image {filename}, close to continue...')
-        #     plot_img_and_mask(img, mask)
