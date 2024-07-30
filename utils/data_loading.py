@@ -15,12 +15,12 @@ from utils.data_augmentation import get_transforms, get_static_transforms, get_a
 from dataset.hm3d_gt import load_image, log_transform_mask, min_max_scale, compute_df, compute_wf
 import cv2
 
-# mono depth 
-from mono_depth.Depth_Anything.mono_predict import pred_from_img, load_model
-
-
 class BasicDataset(Dataset):
-    def __init__(self, images_dir: str, mask_dir: str, depth_dir: str = None, scale: float = 1.0, mask_suffix: str = '', data_augmentation=True, log_transform=True):
+    def __init__(self, images_dir: str, mask_dir: str, depth_dir: str = None,
+                  scale: float = 1.0, 
+                  gen_mono_depth: bool = False,
+                  mask_suffix: str = '', data_augmentation=True, log_transform=True):
+        
         self.images_dir = Path(images_dir)
         self.mask_dir = Path(mask_dir)
         assert 0 < scale <= 1, 'Scale must be between 0 and 1'
@@ -45,8 +45,13 @@ class BasicDataset(Dataset):
         self.img_app_transforms = get_appearance_transforms() if data_augmentation else None
         print("if do data augmentation: ", data_augmentation)
 
-        # 
+        # log loss transform
         self.log_transform = log_transform
+
+        # set mono depth path
+        self.mono_depth = gen_mono_depth
+            # mono depth dir is the same path as depth_dir but with name mono_depth instead of depth
+        self.mono_depth_dir = self.depth_dir.parent / 'mono_depth' if self.mono_depth else None
 
     def __len__(self):
         return len(self.ids)
@@ -173,15 +178,18 @@ class BasicDataset(Dataset):
         df = self.get_df(mask, depth, self.scale)
         depth = self.preprocess(depth, self.scale, is_mask=False, is_depth=True)
 
-        # get the weight field
-        mask = self.get_wf(mask, df, self.scale)
-
-        # assert img.size == mask.size, \
-        #     f'Image and mask {name} should be the same size, but are {img.size} and {mask.size}'
+        # run mono-depth 
+        if self.mono_depth:
+            mono_depth_file = list(self.mono_depth_dir.glob(name + '.*'))
+            assert len(mono_depth_file) == 1, f'Either no mono depth image or multiple mono depth images found for the ID {name}: {mono_depth_file}'
+            mono_depth = load_image(mono_depth_file[0], load_depth=True)
+            mono_depth = self.preprocess(mono_depth, self.scale, is_mask=False, is_depth=True)
 
         img = self.preprocess( img, self.scale, is_mask=False, is_depth=False)
         mask, binary_mask = self.preprocess(mask, self.scale, is_mask=True, is_depth=False, log_transform=self.log_transform)
         
+        # get the weight field
+        mask = self.get_wf(mask, df, 1.0) # scale does not need to be changed here since previous preprocess already did resize
   
         # data augmentation
         if self.transforms:
@@ -197,6 +205,10 @@ class BasicDataset(Dataset):
                 df = np.transpose(df, (1, 2, 0)) if df.ndim == 3 else df[..., np.newaxis]
                 sample['df'] = df
             
+            if self.mono_depth:
+                mono_depth = np.transpose(mono_depth, (1, 2, 0)) if mono_depth.ndim == 3 else mono_depth[..., np.newaxis]
+                sample['mono_depth'] = mono_depth
+
             augmented = self.transforms(**sample)
             img = augmented['image']
             mask = augmented['mask']
@@ -207,6 +219,9 @@ class BasicDataset(Dataset):
                 df = augmented['df']
                 df = np.transpose(df, (2, 0, 1)).squeeze() if df.ndim == 3 else df.squeeze(-1)
 
+            if self.mono_depth:
+                mono_depth = augmented['mono_depth']
+
             if self.img_app_transforms is not None:
                 # do appearance transform only for img
                     # Convert img back to numpy array for appearance transforms
@@ -216,16 +231,24 @@ class BasicDataset(Dataset):
                 img = self.img_app_transforms(**sample_)['image']
 
             # Transpose back to (C, H, W)
-            # print(img.shape, mask.shape, binary_mask.shape)
-            # img = np.transpose(img, (2, 0, 1)) 
             mask = np.transpose(mask, (2, 0, 1)).squeeze() if mask.ndim == 3 else mask.squeeze(-1)
             binary_mask = np.transpose(binary_mask, (2, 0, 1)).squeeze() if binary_mask.ndim == 3 else binary_mask.squeeze(-1)
 
 
         assert img.shape[1:] == mask.shape, \
             f'Image and mask {name} should have the same height and width, but are {img.shape[1:]} and {mask.shape}'
+
+        if self.mono_depth: 
+            return {
+                'image': torch.as_tensor(img).float().contiguous(),
+                'mask': torch.as_tensor(mask).float().contiguous(),
+                'binary_mask': torch.as_tensor(binary_mask).long().contiguous(),
+                'depth': torch.as_tensor(depth).float().contiguous(),
+                'df': torch.as_tensor(df).float().contiguous(),
+                'mono_depth': torch.as_tensor(mono_depth).float().contiguous()
+            }
         
-        if self.depth_dir is not None: 
+        else:
             return {
                 'image': torch.as_tensor(img).float().contiguous(),
                 'mask': torch.as_tensor(mask).float().contiguous(),
@@ -233,15 +256,15 @@ class BasicDataset(Dataset):
                 'depth': torch.as_tensor(depth).float().contiguous(),
                 'df': torch.as_tensor(df).float().contiguous()
             }
-        
-        else:
-            return {
-                'image': torch.as_tensor(img).float().contiguous(),
-                'mask': torch.as_tensor(mask).float().contiguous(),
-                'binary_mask': torch.as_tensor(binary_mask).long().contiguous()
-            }
 
 
 class CarvanaDataset(BasicDataset):
-    def __init__(self, images_dir, mask_dir, depth_dir, scale=1, data_augmentation=True, log_transform=True):
-        super().__init__(images_dir, mask_dir, depth_dir, scale, mask_suffix='', data_augmentation=data_augmentation, log_transform=log_transform)
+    def __init__(self, images_dir, mask_dir, depth_dir, 
+                scale=1, 
+                gen_mono_depth = False,
+                data_augmentation=True, log_transform=True):
+        
+        super().__init__(images_dir, mask_dir, depth_dir, 
+                        scale, 
+                        gen_mono_depth = gen_mono_depth,
+                        mask_suffix='', data_augmentation=data_augmentation, log_transform=log_transform)

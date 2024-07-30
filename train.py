@@ -29,15 +29,13 @@ import datetime
 
 
 # dir_path = Path("/mnt/boysunSSD/Actmap_v2_mini")
-# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")  # actmap_v3 is the one after data balancing cleaning
-dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2_mini")
+dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")  # actmap_v3 is the one after data balancing cleaning
+# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2_mini")
 # dir_path = Path("/cluster/project/cvg/boysun/one_image_dataset_3")
 # dir_path = Path("/mnt/boysunSSD//one_image_dataset_3")
 dir_img = Path(dir_path / 'image/')
 dir_mask = Path(dir_path / 'weighted_mask/')
-# dir_checkpoint = Path(dir_path / 'checkpoints/')
 dir_checkpoint = Path(dir_path / 'checkpoints' / datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
-# dir_checkpoint = Path('/cluster/scratch/boysun/checkpoints' / datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
 dir_debug = Path(dir_path / 'debug/')
 dir_depth = Path(dir_path / 'depth/')
 
@@ -190,6 +188,7 @@ def train_model(
         momentum: float = 0.9,
         gradient_clipping: float = 1.0,
         use_depth: bool = False,
+        use_mono_depth: bool = False,
         reg_loss_weight: float = 1.0,
         head_mode: str = 'segmentation',
         dataset_portion: float = 1.0,
@@ -202,17 +201,19 @@ def train_model(
     # 1. Create dataset
     data_augmentation = True
     log_transform = log_transform
-    # if use_depth:
+
     # Always load depth, but only use it if set 
     try:
-        dataset = CarvanaDataset(dir_img, dir_mask,dir_depth, img_scale, data_augmentation=data_augmentation, log_transform=log_transform)
+        dataset = CarvanaDataset(dir_img, dir_mask,dir_depth, 
+                                 img_scale,
+                                 gen_mono_depth = use_mono_depth,
+                                 data_augmentation=data_augmentation, log_transform=log_transform)
+        
     except (AssertionError, RuntimeError, IndexError):
-        dataset = BasicDataset(dir_img, dir_mask, dir_depth, img_scale, data_augmentation=data_augmentation, log_transform=log_transform)
-    # else:
-    #     try:
-    #         dataset = CarvanaDataset(dir_img, dir_mask, None, img_scale, data_augmentation=data_augmentation, log_transform=log_transform)
-    #     except (AssertionError, RuntimeError, IndexError):
-    #         dataset = BasicDataset(dir_img, dir_mask, None,img_scale, data_augmentation=data_augmentation, log_transform=log_transform)
+        dataset = BasicDataset(dir_img, dir_mask, dir_depth,
+                                img_scale, 
+                                gen_mono_depth = use_mono_depth,
+                                data_augmentation=data_augmentation, log_transform=log_transform)
 
     # 2. Subset the dataset
     total_size = int(len(dataset) * dataset_portion)
@@ -241,6 +242,7 @@ def train_model(
              dataset_portion=dataset_portion,
              do_data_augmentation=data_augmentation,
              use_depth=use_depth,
+             use_mono_depth = use_mono_depth,
              img_scale=img_scale,
              regloss_weight = reg_loss_weight,
              lr_decay = lr_decay,
@@ -275,6 +277,7 @@ def train_model(
     
     grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
 
+    # 5. set up losses
     # loss_fn_rg = weighted_mse_loss
     # if reg_loss_type == 'l1_inv':
     #     loss_fn_rg = weighted_l1_inverse_loss
@@ -282,10 +285,8 @@ def train_model(
     #     loss_fn_rg = weighted_huber_loss
 
     loss_fn_rg = masked_f1_loss
-    
     pos_weight = torch.tensor([2.0]).to(device)
     loss_fn_cl = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-    
     # loss_fn_df = df_in_neighbor_loss
     loss_fn_df = df_normalized_loss_in_neighbor
 
@@ -294,7 +295,7 @@ def train_model(
     reg_loss_weight = reg_loss_weight       
     # weight of regression loss really matters, 5.0 is a tested good one, if it's higher, e.g., 10.0, cls result becomes worse
 
-    # 5. Begin training
+    # 6. Begin training
     for epoch in range(1, epochs + 1):
         model.train()
         epoch_loss = 0
@@ -303,7 +304,8 @@ def train_model(
 
                 true_masks, true_binary_masks = batch['mask'], batch['binary_mask']
                 true_df = batch['df']
-                images, depth = batch['image'],batch['depth']
+                images = batch['image']
+                depth = batch['depth'] if not use_mono_depth else batch['mono_depth']
 
                 # assert images.shape[1] + depth.shape[1] == model.n_channels, \
                 assert images.shape[1] + depth.shape[1] == 4, \
@@ -545,6 +547,7 @@ if __name__ == '__main__':
             val_percent=args.val / 100,
             amp=args.amp,
             use_depth=args.use_depth,
+            use_mono_depth = args.use_mono_depth,
             reg_loss_weight=args.reg_loss_weight,
             head_mode = head_mode,
             weight_decay=1e-6,
@@ -566,6 +569,7 @@ if __name__ == '__main__':
             val_percent=args.val / 100,
             amp=args.amp,
             use_depth=args.use_depth,
+            use_mono_depth = args.use_mono_depth,
             reg_loss_weight=args.reg_loss_weight,
             head_mode = head_mode,
             weight_decay=1e-6,
