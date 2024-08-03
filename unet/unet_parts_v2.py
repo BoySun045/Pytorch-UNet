@@ -154,10 +154,10 @@ class RegressionHead(nn.Sequential):
 
         conv2d_1 = nn.Conv2d(in_channels, 64, kernel_size=kernel_size, padding=kernel_size // 2)
         activation_1 = nn.ReLU()
-        batch_norm_1 = nn.BatchNorm2d(64)
+        # batch_norm_1 = nn.BatchNorm2d(64)
         conv2d_2 = nn.Conv2d(64, 64, kernel_size=kernel_size, padding=kernel_size // 2)
         activation_2 = nn.ReLU()
-        batch_norm_2 = nn.BatchNorm2d(64)
+        # batch_norm_2 = nn.BatchNorm2d(64)
         conv2d_3 = nn.Conv2d(64, out_channels, kernel_size=1)
         
         # Downsampling layer
@@ -166,7 +166,9 @@ class RegressionHead(nn.Sequential):
         # activation_3 = ScaledTanh()  
         activation_3 = nn.ReLU()
         
-        super().__init__(conv2d_1, activation_1, batch_norm_1, conv2d_2, activation_2, batch_norm_2, conv2d_3, downsample, activation_3)
+        # super().__init__(conv2d_1, activation_1, batch_norm_1, conv2d_2, activation_2, batch_norm_2, conv2d_3, downsample, activation_3)
+
+        super().__init__(conv2d_1, activation_1, conv2d_2, activation_2, conv2d_3, activation_3)
 
 class DfRegressionHead(nn.Sequential):
 

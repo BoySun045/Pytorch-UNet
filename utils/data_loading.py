@@ -65,15 +65,30 @@ class BasicDataset(Dataset):
             mask = np.array(pil_img)
             mask = np.array(Image.fromarray(mask).resize((int(mask.shape[1] * scale), int(mask.shape[0] * scale),), resample=Image.NEAREST))
 
-            mask_weight_global_max = 3000.0
-            mask_weight_global_min = 1e-6
+            # global min_max
+            # mask_weight_global_max = 3000.0
+            # mask_weight_global_min = 1
             
+            # local min_max
+            mask_weight_global_max = mask.max()
+            mask_weight_global_min = mask[mask>0].min()
+            # print("weighted mask max min", mask_weight_global_max, mask_weight_global_min)
+
+            # handling nan sitation:
+            if abs(mask_weight_global_max-mask_weight_global_min) < 1e-3:
+                mask = np.ones_like(mask)
+                binary_mask = (mask > 0.0001).astype(np.int64)
+                return mask, binary_mask
+
             if log_transform:
                 mask = np.clip(mask, mask_weight_global_min, mask_weight_global_max)
-                # mask_log = log_transform_mask(mask)   # log transform move to the loss calculation part
-                # mask_log_max = np.log1p(mask_weight_global_max)
-                # mask_log_min = np.log1p(mask_weight_global_min)
-                # mask = min_max_scale(mask_log, mask_log_min, mask_log_max)
+                mask_log = log_transform_mask(mask)   # log transform move to the loss calculation part
+                mask_log_max = np.log1p(mask_weight_global_max)
+                mask_log_min = np.log1p(mask_weight_global_min)
+                mask = min_max_scale(mask_log, mask_log_min, mask_log_max)
+                # print("dataloader mask min max", mask.min(), mask.max())
+
+
                 # mask = np.clip(mask, 0, 1)
                 # mask = mask_log
                 # print("mask min max: ", mask.min(), mask.max())
@@ -189,8 +204,21 @@ class BasicDataset(Dataset):
         mask, binary_mask = self.preprocess(mask, self.scale, is_mask=True, is_depth=False, log_transform=self.log_transform)
         
         # get the weight field
+        # print("mask min max before get_wf", mask.min(), mask.max())
         mask = self.get_wf(mask, df, 1.0, 10.0) # scale does not need to be changed here since previous preprocess already did resize
-  
+
+        # valid_mask = np.where(mask > 0)
+        # print("num valid: ", len(valid_mask[0]))
+        # #  print a data distribution anaylsis
+        # valid_weight = mask[valid_mask]
+        # print(" num 0-0.2 in mask:", len(valid_weight[valid_weight < 0.2]))
+        # print(" num 0.2-0.4 in mask:", len(valid_weight[(valid_weight >= 0.2) & (valid_weight < 0.4)]))
+        # print(" num 0.4-0.6 in mask:", len(valid_weight[(valid_weight >= 0.4) & (valid_weight < 0.6)]))
+        # print(" num 0.6-0.8 in mask:", len(valid_weight[(valid_weight >= 0.6) & (valid_weight < 0.8)]))
+        # print(" num 0.8-1 in mask:", len(valid_weight[(valid_weight >= 0.8) & (valid_weight <= 1)]))
+
+        # print("mask min max after get_wf", mask.min(), mask.max())
+       
         # data augmentation
         if self.transforms:
             img = np.transpose(img, (1, 2, 0))

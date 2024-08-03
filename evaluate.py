@@ -2,9 +2,9 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
-from utils.regression_loss import weighted_mse_loss, mae_loss, mse_loss, reverse_log_transform, log_transform
+from utils.regression_loss import weighted_mse_loss, masked_f1_loss, reverse_log_transform, log_transform
 from utils.dice_score import dice_coeff
-from utils.df_loss import df_in_neighbor_loss, l1_loss_fn, denormalize_df
+from utils.df_loss import df_in_neighbor_loss, l1_loss_fn, denormalize_df, mae_loss
 from utils.utils import downsample_torch_mask
 
 @torch.inference_mode()
@@ -14,12 +14,12 @@ def evaluate(net, dataloader, device, amp, use_depth=False,
     net.eval()
     num_val_batches = len(dataloader)
 
-    # loss_fn_rg = weighted_mse_loss
+    # loss_fn_rg = masked_f1_loss
     loss_fn_rg = mae_loss
     dice_score = 0
     reg_loss = 0
     df_loss = 0
-    loss_fn_df = l1_loss_fn
+    loss_fn_df = mae_loss
 
     autocast_device = 'cuda' if device.type == 'cuda' else 'cpu'
 
@@ -64,9 +64,12 @@ def evaluate(net, dataloader, device, amp, use_depth=False,
                 df_pred, mask_pred = net(image)
                 print("df pred")
                 df_pred = denormalize_df(df_pred, df_neighborhood=10)
+                print("df_pred shape", df_pred.shape)
+                print("true df shape", ds_true_df.shape)
                 df_loss += loss_fn_df(df_pred.float().squeeze(1), ds_true_df)
-                mask_true_log = log_transform(mask_true)
-                reg_loss += loss_fn_rg(mask_pred, mask_true_log.float())
+                print("df loss, ", df_loss)
+                # mask_true_log = log_transform(mask_true)
+                reg_loss += loss_fn_rg(mask_pred.squeeze(), mask_true.float())
 
     net.train()
     avg_dice_score = dice_score / num_val_batches if dice_score != 0 else 0

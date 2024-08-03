@@ -16,8 +16,8 @@ def compute_gradients(depth_image):
         depth_image = depth_image.astype(np.float64)
     
     # Calculate gradients in x and y directions
-    grad_x = cv2.Sobel(depth_image, cv2.CV_64F, 1, 0, ksize=5)
-    grad_y = cv2.Sobel(depth_image, cv2.CV_64F, 0, 1, ksize=5)
+    grad_x = cv2.Sobel(depth_image, cv2.CV_64F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(depth_image, cv2.CV_64F, 0, 1, ksize=3)
 
     return grad_x, grad_y
 

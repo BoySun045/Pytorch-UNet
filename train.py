@@ -29,8 +29,8 @@ import datetime
 
 
 # dir_path = Path("/mnt/boysunSSD/Actmap_v2_mini")
-dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")  # actmap_v3 is the one after data balancing cleaning
-# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2_mini")
+# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")  # actmap_v3 is the one after data balancing cleaning
+dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2_mini")
 # dir_path = Path("/cluster/project/cvg/boysun/one_image_dataset_3")
 # dir_path = Path("/mnt/boysunSSD//one_image_dataset_3")
 dir_img = Path(dir_path / 'image/')
@@ -226,7 +226,7 @@ def train_model(
     print(f"Train size: {n_train}, Validation size: {n_val}")
 
     # 4. Create data loaders
-    loader_args = dict(batch_size=batch_size, num_workers=16, pin_memory=True)
+    loader_args = dict(batch_size=batch_size, num_workers=1, pin_memory=True)
     train_loader = DataLoader(train_set, shuffle=True, **loader_args)
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
@@ -271,7 +271,7 @@ def train_model(
     #use adam optimizer
     # optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     if lr_decay:
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=20, factor=0.5, min_lr=5e-6)  # goal: maximize score
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=15, factor=0.5, min_lr=5e-6)  # goal: maximize score
     else:
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=10000000, factor=0.5, min_lr=5e-5)  # goal: minimize loss
     
@@ -373,7 +373,8 @@ def train_model(
 
                     elif head_mode == "df_wf":
                         df_pred, masks_pred = model(images)
-                        reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float())
+                        print("true mask min max", true_masks.min(), true_masks.max())
+                        reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float(), df = ds_true_df)
                         df_loss = loss_fn_df(df_pred.squeeze(1), ds_true_df)
                         loss = reg_loss_weight*reg_loss + df_loss
                         class_loss = None
@@ -399,8 +400,8 @@ def train_model(
                 pbar.set_postfix(**{'loss (batch)': loss.item()})
 
                 # Evaluation round
-                division_step = (n_train // (10 * batch_size))
-                # division_step = 10
+                # division_step = (n_train // (10 * batch_size))
+                division_step = 30
                 if division_step > 0 and global_step % division_step == 0:
                     histograms = {}
                     for tag, value in model.named_parameters():
@@ -469,7 +470,7 @@ def train_model(
                                  global_step, epoch, histograms, use_depth)
 
 
-        if save_checkpoint and epoch % 10 == 0:
+        if save_checkpoint and epoch % 2 == 0:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
             use_depth_str = 'depth' if use_depth else 'no_depth'
@@ -551,7 +552,7 @@ if __name__ == '__main__':
             use_mono_depth = args.use_mono_depth,
             reg_loss_weight=args.reg_loss_weight,
             head_mode = head_mode,
-            weight_decay=1e-6,
+            weight_decay=1e-8,
             reg_ds_factor=args.regression_downsample_factor
         )
     except torch.cuda.OutOfMemoryError:
@@ -573,6 +574,6 @@ if __name__ == '__main__':
             use_mono_depth = args.use_mono_depth,
             reg_loss_weight=args.reg_loss_weight,
             head_mode = head_mode,
-            weight_decay=1e-6,
+            weight_decay=1e-8,
             reg_ds_factor=args.regression_downsample_factor
         )

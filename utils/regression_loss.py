@@ -9,7 +9,7 @@ def mae_loss(input, target):
     return F.l1_loss(input, target)
 
 def l1_loss_fn(input, target):
-    return F.l1_loss(input, target)
+    return F.l1_loss(input, target,reduction='none')
 # def weighted_mse_loss(input, target, increase_factor=2.0):
 
 #     # Generate weight map
@@ -142,19 +142,44 @@ def reverse_log_transform(y):
     # expm1(x) = exp(x) - 1
     return torch.expm1(y)
 
-def masked_f1_loss(input, target, valid_thresh=2e-6):
-    # print("min max target: ", target.min(), target.max())
-    # print("min max input: ", input.min(), input.max())
+def masked_f1_loss(input, target, df = None , valid_thresh=0.05):
+    print("masked_f1_loss")
+    print("min max target: ", target.min(), target.max())
+    print("min max input: ", input.min(), input.max())
+
     # wf_loss = l1_loss_fn(input, target)
     # square loss
-    target = log_transform(target)
+    # target = log_transform(target)
     wf_loss = l1_loss_fn(input, target)
-    valid_mask = (target > valid_thresh).float()
+    # print("min max wf_loss: ", wf_loss.min(), wf_loss.max())
+    # print("wf loss shape ", wf_loss.shape)
+    if df is None:
+        valid_mask = (target > valid_thresh).float()
+    else:
+        valid_mask = (df < 10).float()
     valid_norm = valid_mask.sum()
     # print("valid mask shape ", valid_mask.shape)
     # print("num of valid pixels: ", valid_norm)
 
-    wf_loss = (wf_loss * valid_mask).sum() / valid_norm + 1e-6
+    valid_loss = wf_loss * valid_mask
+    # print("min max valid_loss: ", valid_loss.min(), valid_loss.max())
+    # print("valid loss shape ", valid_loss.shape)
+    wf_loss = valid_loss.sum() / valid_norm + 1e-6
+    
+    # Distribution analysis
+    # valid_weight = target[valid_mask.bool()]
+    # print(" num 0-0.2 in target:", len(valid_weight[valid_weight < 0.2]))
+    # print(" num 0.2-0.4 in target:", len(valid_weight[(valid_weight >= 0.2) & (valid_weight < 0.4)]))
+    # print(" num 0.4-0.6 in target:", len(valid_weight[(valid_weight >= 0.4) & (valid_weight < 0.6)]))
+    # print(" num 0.6-0.8 in target:", len(valid_weight[(valid_weight >= 0.6) & (valid_weight < 0.8)]))
+    # print(" num 0.8-1 in target:", len(valid_weight[(valid_weight >= 0.8) & (valid_weight <= 1)]))
+
+    # # also print out all mask distribution
+    # print(" num 0-0.2 in mask:", len(target[target < 0.2]))
+    # print(" num 0.2-0.4 in mask:", len(target[(target >= 0.2) & (target < 0.4)]))
+    # print(" num 0.4-0.6 in mask:", len(target[(target >= 0.4) & (target < 0.6)]))
+    # print(" num 0.6-0.8 in mask:", len(target[(target >= 0.6) & (target < 0.8)]))
+    # print(" num 0.8-1 in mask:", len(target[(target >= 0.8) & (target <= 1)]))
 
     return wf_loss
 

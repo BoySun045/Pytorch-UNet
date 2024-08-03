@@ -9,6 +9,7 @@ def mae_loss(input, target):
     return F.l1_loss(input, target)
 
 def l1_loss_fn(input, target):
+    # return F.l1_loss(input, target, reduction='none')
     return F.l1_loss(input, target)
 
 def df_in_neighbor_loss(input, target, df_neighborhood=10):
@@ -41,7 +42,10 @@ def denormalize_df(df_norm, df_neighborhood):
     
 def df_normalized_loss_in_neighbor(input, target, df_neighborhood=10):
     # use the normalization loss from https://github.com/cvg/DeepLSD/blob/19eafc71d0c8de868f1b2b1f389efc265e07cda1/deeplsd/models/deeplsd.py#L81
-    
+    print("df_normalized_loss_in_neighbor")
+    print("min max target: ", target.min(), target.max())
+    print("min max input: ", input.min(), input.max())
+
     # first, compute the loss
     df_loss= l1_loss_fn(input, normalize_df(target, df_neighborhood))
 
@@ -49,6 +53,8 @@ def df_normalized_loss_in_neighbor(input, target, df_neighborhood=10):
         # Retrieve the mask of valid pixels
     valid_mask = (target < df_neighborhood).float()
     valid_norm = valid_mask.sum()
+    print("valid mask shape ", valid_mask.shape)
+    print("num of valid pixels: ", valid_norm)
 
     df_loss = (df_loss * valid_mask).sum() / valid_norm + 1e-6
 

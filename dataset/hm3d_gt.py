@@ -13,7 +13,7 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 from .get_depth_discontinuity import *
 from scipy.ndimage import distance_transform_edt
-from scipy.ndimage import median_filter, grey_dilation, binary_dilation
+from scipy.ndimage import median_filter, maximum_filter, grey_dilation, binary_dilation
 import cv2
 from scipy.spatial import cKDTree
 
@@ -101,18 +101,34 @@ def get_frontier_line_mask(binary_mask, depth_image):
 
     assert binary_mask.shape == depth_image.shape, "Mask and depth image must have the same shape"
 
+    # handle the depth artifect
+    depth_image[depth_image < 1e-6] = 500
+
     grad_x, grad_y = compute_gradients(depth_image)
     magnitude, direction = gradient_magnitude_and_direction(grad_x, grad_y)
     from scipy.ndimage import median_filter
     # Threshold for detecting discontinuities
-    threshold_max = 1500  # This value might need tuning depending on the depth range
-    threshold_min = 50
+    threshold_max = 400  # This value might need tuning depending on the depth range
+    threshold_min = 40
     discontinuity_mask = detect_discontinuities(magnitude, threshold_max, threshold_min)
 
-    refined_mask = refine_mask(binary_mask, kernel_size=5, erosion_iterations=0)
+    refined_mask = refine_mask(binary_mask, kernel_size=3, erosion_iterations=0)
 
     # the combined mask is the part that both the Unet mask and the discontinuity mask agree on
     combined_mask = np.logical_and(refined_mask, discontinuity_mask)
+
+
+    # add dilation and erosion to the combined mask
+    number_of_interations = 2 
+    while number_of_interations > 0:
+        combined_mask = cv2.dilate(combined_mask.astype(np.uint8), np.ones((5, 5), np.uint8), iterations=1)
+        combined_mask = cv2.erode(combined_mask.astype(np.uint8), np.ones((5, 5), np.uint8), iterations=1)
+        number_of_interations -= 1
+
+    number_of_median_filters = 0
+    while number_of_median_filters > 0:
+        combined_mask = median_filter(combined_mask, size=3)
+        number_of_median_filters -= 1
 
     return combined_mask, discontinuity_mask, refined_mask
 
@@ -128,34 +144,6 @@ def compute_df(mask, depth, line_neighborhood=10):
     return distance_field
 
 
-
-# def extend_weight_mask(weight_mask, kernel_size=7):
-#     # Pad the weight_mask to handle the borders
-#     pad_size = kernel_size // 2
-#     padded_mask = np.pad(weight_mask, pad_size, mode='constant', constant_values=0)
-    
-#     extended_mask = np.zeros_like(weight_mask)
-
-#     # Iterate over each pixel in the weight_mask
-#     for y in range(weight_mask.shape[0]):
-#         for x in range(weight_mask.shape[1]):
-#             # Extract the kernel around the current pixel
-#             kernel = padded_mask[y:y + kernel_size, x:x + kernel_size]
-            
-#             # Get the non-zero values in the kernel
-#             non_zero_values = kernel[kernel > 0]
-            
-#             if non_zero_values.size > 0:
-#                 # Compute the median of the non-zero values
-#                 median_value = np.median(non_zero_values)
-#                 extended_mask[y, x] = median_value
-#             else:
-#                 # If no non-zero values, keep the original pixel value
-#                 extended_mask[y, x] = weight_mask[y, x]
-    
-#     return extended_mask
-
-
 def extend_weight_mask(weight_mask, kernel_size=9):
     # Create a structuring element (a larger one for more aggressive growth)
     structuring_element = np.ones((kernel_size, kernel_size))
@@ -165,9 +153,24 @@ def extend_weight_mask(weight_mask, kernel_size=9):
     
     return extended_mask
 
-def compute_wf(weight_mask, distance_field, line_neighborhood=10):
-    # for weight field, it takes the value from weigh_mask, if it's coresponing distance field value is less than line_neighborhood
+# def compute_wf(weight_mask, distance_field, line_neighborhood=10):
+#     # for weight field, it takes the value from weigh_mask, if it's coresponing distance field value is less than line_neighborhood
     
-    weight_mask = extend_weight_mask(weight_mask)
-    weight_mask[distance_field > line_neighborhood] = 0
-    return weight_mask
+#     weight_mask = extend_weight_mask(weight_mask)
+#     weight_mask[distance_field > line_neighborhood] = 0
+#     return weight_mask
+
+def compute_wf(weight_mask, df, line_neighborhood=10):
+    # for weight field, it takes the value from weigh_mask, if it's coresponing distance field value is less than line_neighborhood
+    line_map = np.zeros_like(df)
+    line_map[df < line_neighborhood] = 1
+    wf = np.zeros_like(df)
+    wf[line_map == 1] = weight_mask[line_map == 1]
+
+    kernel_size = 3
+    wf_filtered = wf
+    wf_filtered = median_filter(wf, size=3)
+    wf_filtered = maximum_filter(wf_filtered, size=kernel_size)
+    wf_filtered = maximum_filter(wf_filtered, size=kernel_size)
+    
+    return wf_filtered
