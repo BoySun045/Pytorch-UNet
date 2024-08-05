@@ -101,18 +101,35 @@ def get_frontier_line_mask(binary_mask, depth_image):
 
     assert binary_mask.shape == depth_image.shape, "Mask and depth image must have the same shape"
 
+    depth_image[depth_image < 1e-6] = 500
     grad_x, grad_y = compute_gradients(depth_image)
+
+    # print("depth min: ", depth_image.min())
     magnitude, direction = gradient_magnitude_and_direction(grad_x, grad_y)
+    # print("max of magnitude: ", magnitude.max())
+
     from scipy.ndimage import median_filter
     # Threshold for detecting discontinuities
-    threshold_max = 1500  # This value might need tuning depending on the depth range
-    threshold_min = 50
+    threshold_max = 400  # This value might need tuning depending on the depth range
+    threshold_min = 40
     discontinuity_mask = detect_discontinuities(magnitude, threshold_max, threshold_min)
 
-    refined_mask = refine_mask(binary_mask, kernel_size=5, erosion_iterations=0)
+    refined_mask = refine_mask(binary_mask, kernel_size=3, erosion_iterations=0)
 
     # the combined mask is the part that both the Unet mask and the discontinuity mask agree on
     combined_mask = np.logical_and(refined_mask, discontinuity_mask)
+
+    # add dilation and erosion to the combined mask
+    number_of_interations = 2 
+    while number_of_interations > 0:
+        combined_mask = cv2.dilate(combined_mask.astype(np.uint8), np.ones((5, 5), np.uint8), iterations=1)
+        combined_mask = cv2.erode(combined_mask.astype(np.uint8), np.ones((5, 5), np.uint8), iterations=1)
+        number_of_interations -= 1
+
+    number_of_median_filters = 0
+    while number_of_median_filters > 0:
+        combined_mask = median_filter(combined_mask, size=3)
+        number_of_median_filters -= 1
 
     return combined_mask, discontinuity_mask, refined_mask
 
@@ -122,10 +139,10 @@ def calculate_euclidean_distance_field(binary_grid):
     return distance_field
 
 def compute_df(mask, depth, line_neighborhood=10):
-    fl_mask, _, _ = get_frontier_line_mask(mask, depth)
+    fl_mask, discontinuity_mask, refined_mask = get_frontier_line_mask(mask, depth)
     distance_field = calculate_euclidean_distance_field(fl_mask)
     distance_field[distance_field > line_neighborhood] = line_neighborhood + 1e-3  # Clip the distance field
-    return distance_field
+    return distance_field, discontinuity_mask, refined_mask
 
 
 
@@ -156,13 +173,13 @@ def extend_weight_mask(weight_mask, kernel_size=7):
     return extended_mask
 
 # weight field for weights regression, logis is the same as the distance field
-def compute_wf(weight_mask, distance_field, line_neighborhood=10):
+def compute_wf(weight_mask, distance_field, line_neighborhood=10, extend = True):
     # for weight field, it takes the value from weigh_mask, if it's coresponing distance field value is less than line_neighborhood
     
-    weight_mask = extend_weight_mask(weight_mask)
-    weight_field = np.zeros_like(distance_field)
-    weight_field[distance_field < line_neighborhood] = weight_mask[distance_field < line_neighborhood]
-    return weight_field
+    if extend:
+        weight_mask = extend_weight_mask(weight_mask)
+    weight_mask[distance_field > line_neighborhood] = 0
+    return weight_mask
 
 # def compute_wf(weight_mask, distance_field, line_neighborhood=10, k=5):
 

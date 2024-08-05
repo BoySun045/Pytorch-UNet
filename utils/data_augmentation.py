@@ -4,7 +4,7 @@ from albumentations.pytorch import ToTensorV2
 
 def get_transforms():
     transforms = A.Compose([
-        A.RandomCrop(width=320, height=320),
+        A.RandomCrop(width=224, height=224),
         A.HorizontalFlip(p=0.5),
         A.ShiftScaleRotate(shift_limit=0.0, scale_limit=0.0, rotate_limit=45, p=0.5),
         ToTensorV2()
@@ -22,7 +22,7 @@ def get_appearance_transforms():
 
 def get_static_transforms():
     transforms = A.Compose([
-        A.CenterCrop(width=320, height=320),
+        A.CenterCrop(width=224, height=224),
         ToTensorV2()
     ], additional_targets={'mask': 'mask', 'binary_mask': 'mask', 
                            'depth': 'image', 'mono_depth': 'image', 'df': 'mask'})

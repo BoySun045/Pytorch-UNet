@@ -2,17 +2,12 @@ import logging
 import numpy as np
 import torch
 from PIL import Image
-from functools import lru_cache
-from functools import partial
-from itertools import repeat
-from multiprocessing import Pool
 from os import listdir
 from os.path import splitext, isfile, join
 from pathlib import Path
 from torch.utils.data import Dataset
-from tqdm import tqdm
 from utils.data_augmentation import get_transforms, get_static_transforms, get_appearance_transforms
-from dataset.hm3d_gt import load_image, log_transform_mask, min_max_scale, compute_df, compute_wf
+from dataset.hm3d_gt import load_image, min_max_scale, compute_df, log_transform_mask
 import cv2
 
 class BasicDataset(Dataset):
@@ -65,18 +60,15 @@ class BasicDataset(Dataset):
             mask = np.array(pil_img)
             mask = np.array(Image.fromarray(mask).resize((int(mask.shape[1] * scale), int(mask.shape[0] * scale),), resample=Image.NEAREST))
 
-            mask_weight_global_max = 5000.0
+            mask_weight_global_max = 3000.0
             mask_weight_global_min = 1e-6
             
             if log_transform:
                 mask = np.clip(mask, mask_weight_global_min, mask_weight_global_max)
-                # mask_log = log_transform_mask(mask)   # log transform move to the loss calculation part
-                # mask_log_max = np.log1p(mask_weight_global_max)
-                # mask_log_min = np.log1p(mask_weight_global_min)
-                # mask = min_max_scale(mask_log, mask_log_min, mask_log_max)
-                # mask = np.clip(mask, 0, 1)
-                # mask = mask_log
-                # print("mask min max: ", mask.min(), mask.max())
+                mask = log_transform_mask(mask)
+                log_max = np.log1p(mask_weight_global_max)
+                log_min = np.log1p(mask_weight_global_min)
+                mask = min_max_scale(mask, log_min, log_max)
             
             else:
                 mask = np.clip(mask, mask_weight_global_min, mask_weight_global_max)
@@ -149,16 +141,8 @@ class BasicDataset(Dataset):
         
         assert mask.shape == depth.shape, f'Mask and depth should have the same size, but are {mask.shape} and {depth.shape}'
 
-        df = compute_df(binary_mask, depth, df_neighbourhood)
+        df, _, _ = compute_df(binary_mask, depth, df_neighbourhood)
         return df
-    
-    @staticmethod
-    def get_wf(mask, distance_field, scale, wf_neighbourhood=10.0):
-        mask = np.array(mask)
-        mask = np.array(Image.fromarray(mask).resize((int(mask.shape[1] * scale), int(mask.shape[0] * scale),), resample=Image.NEAREST))
-        wf = compute_wf(mask, distance_field, wf_neighbourhood)
-        return wf
-
 
     def __getitem__(self, idx):
         name = self.ids[idx]
@@ -187,10 +171,7 @@ class BasicDataset(Dataset):
 
         img = self.preprocess( img, self.scale, is_mask=False, is_depth=False)
         mask, binary_mask = self.preprocess(mask, self.scale, is_mask=True, is_depth=False, log_transform=self.log_transform)
-        
-        # get the weight field
-        mask = self.get_wf(mask, df, 1.0) # scale does not need to be changed here since previous preprocess already did resize
-  
+          
         # data augmentation
         if self.transforms:
             img = np.transpose(img, (1, 2, 0))
@@ -258,13 +239,3 @@ class BasicDataset(Dataset):
             }
 
 
-class CarvanaDataset(BasicDataset):
-    def __init__(self, images_dir, mask_dir, depth_dir, 
-                scale=1, 
-                gen_mono_depth = False,
-                data_augmentation=True, log_transform=True):
-        
-        super().__init__(images_dir, mask_dir, depth_dir, 
-                        scale, 
-                        gen_mono_depth = gen_mono_depth,
-                        mask_suffix='', data_augmentation=data_augmentation, log_transform=log_transform)

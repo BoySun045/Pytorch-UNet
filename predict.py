@@ -159,7 +159,7 @@ if __name__ == '__main__':
     out_overlay_imgs = []
 
     for f in files:
-        if f.endswith('.jpg'):
+        if f.endswith('.png') or f.endswith('.jpg'):
             in_imgs.append(os.path.join(in_files, f))
             out_imgs.append(os.path.join(out_files, f))
             out_overlay_imgs.append(os.path.join(out_overlay_files, f))
@@ -210,16 +210,17 @@ if __name__ == '__main__':
             wf_pred = result[1]
 
             weighted_map = df_wf_to_linemap(df=df_pred, wf=wf_pred, 
-                                            df_neighborhood=10, threshold=5.0)
+                                            df_neighborhood=10, threshold=1.0)
             
             global_max = 3000.0
             global_min = 1e-6
 
             # normalize the weighted map using min-max scaling, and use global min and max
-            weighted_map = (weighted_map - global_min) / (global_max - global_min) * 255
+            weighted_map = weighted_map*4
 
+            weighted_map = (weighted_map - global_min) / (global_max - global_min) * 255
             # self-normalize the weighted map
-            weighted_map = (weighted_map - weighted_map.min()) / (weighted_map.max() - weighted_map.min()) * 255
+            # weighted_map = (weighted_map - weighted_map.min()) / (weighted_map.max() - weighted_map.min()) * 255
 
             # get a heatmap from the weighted map, 
             # the higher the value, the more bright yellow the pixel
