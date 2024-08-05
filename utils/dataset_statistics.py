@@ -7,8 +7,8 @@ from matplotlib import pyplot as plt
 from concurrent.futures import ThreadPoolExecutor
 from PIL import Image
 
-dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")
-# dir_path = Path("/mnt/boysunSSD/Actmap_v2_mini")
+# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")
+dir_path = Path("/mnt/boysunSSD/Actmap_v2_mini")
 dir_img = Path(dir_path / 'image/')
 dir_mask = Path(dir_path / 'weighted_mask/')
 dir_depth = Path(dir_path / 'depth/')
@@ -17,10 +17,16 @@ dir_debug = Path(dir_path / "debug")
 if not dir_debug.exists():
     dir_debug.mkdir()
 
+# Log transformation
+def log_transform_mask(y):
+    return np.log1p(y)  # log1p(x) = log(1 + x)
+
 def create_label_mask_fast(array, bin_edges=None):
-    array = np.clip(array, 0, 2999)  # Clip values to the range [0, 3000]
+    array = np.clip(array, 0, 2980)  # Clip values to the range [0, 3000]
+    array = log_transform_mask(array)
     if bin_edges==None:
-        bin_edges = np.arange(0, 3100, 100)
+        # bin_edges = np.arange(0, 3100, 100)
+        bin_edges = np.arange(0, 8, 0.25)
     # Use digitize to get the bin index for each element in the array
     label_mask = np.digitize(array, bin_edges) - 1  # Subtract 1 to make bins 0-indexed
     return label_mask
@@ -78,7 +84,7 @@ def process_file(npz_file):
     try:
         weighted_mask = load_weighted_mask_from_npz(dir_mask / npz_file)
         label_mask = create_label_mask_fast(weighted_mask)
-        class_counts = count_classes(label_mask, 30)
+        class_counts = count_classes(label_mask, 31)
         max_value = weighted_mask.max()
         # Save the semantic map as an RGB image
         # save_semantic_map(label_mask, npz_file)
@@ -137,7 +143,7 @@ if __name__ == "__main__":
     print("Number of npz files: ", len(weighted_mask_npz_list))
 
 
-    total_class_counts = np.zeros(30, dtype=int)
+    total_class_counts = np.zeros(31, dtype=int)
     max_values = []
 
 
