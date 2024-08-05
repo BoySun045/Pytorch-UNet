@@ -67,15 +67,15 @@ class BasicDataset(Dataset):
 
             # global min_max
             # mask_weight_global_max = 3000.0
-            # mask_weight_global_min = 1
+            # mask_weight_global_min = 100
             
             # local min_max
             mask_weight_global_max = mask.max()
             mask_weight_global_min = mask[mask>0].min()
-            # print("weighted mask max min", mask_weight_global_max, mask_weight_global_min)
+            #print("weighted mask max min", mask_weight_global_max, mask_weight_global_min)
 
             # handling nan sitation:
-            if abs(mask_weight_global_max-mask_weight_global_min) < 1e-3:
+            if abs(mask_weight_global_max-mask_weight_global_min) < 1e-3 or mask_weight_global_max < mask_weight_global_min:
                 mask = np.ones_like(mask)
                 binary_mask = (mask > 0.0001).astype(np.int64)
                 return mask, binary_mask
