@@ -26,9 +26,9 @@ def create_label_mask_fast(array, bin_edges=None):
     array = log_transform_mask(array)
     if bin_edges==None:
         # bin_edges = np.arange(0, 3100, 100)
-        bin_edges = np.arange(0, 8, 0.25)
+        bin_edges = np.arange(0, 8, 0.25)  # create actually 33 bins ,0), (0, 0.25), (0.25, 0.5), ..., (7.75, 8)
     # Use digitize to get the bin index for each element in the array
-    label_mask = np.digitize(array, bin_edges) - 1  # Subtract 1 to make bins 0-indexed
+    label_mask = np.digitize(array, bin_edges) - 1  # Subtract 1 to make bins 0-indexed, since we do clip min to be 0, there will be no -1 bin
     return label_mask
 
 def count_classes(label_mask, num_classes):
@@ -84,7 +84,7 @@ def process_file(npz_file):
     try:
         weighted_mask = load_weighted_mask_from_npz(dir_mask / npz_file)
         label_mask = create_label_mask_fast(weighted_mask)
-        class_counts = count_classes(label_mask, 31)
+        class_counts = count_classes(label_mask, 32)
         max_value = weighted_mask.max()
         # Save the semantic map as an RGB image
         # save_semantic_map(label_mask, npz_file)
@@ -143,7 +143,7 @@ if __name__ == "__main__":
     print("Number of npz files: ", len(weighted_mask_npz_list))
 
 
-    total_class_counts = np.zeros(31, dtype=int)
+    total_class_counts = np.zeros(32, dtype=int)
     max_values = []
 
 
