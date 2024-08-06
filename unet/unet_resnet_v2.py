@@ -175,7 +175,7 @@ class TwoHeadUnet(PredictionModel):
 
             self.df_regression_head = DfRegressionHead(
                 in_channels=decoder_channels[-1],
-                out_channels=classes,
+                out_channels=1,
                 downsample_factor=regression_downsample_factor,
                 activation=activation, # always use relu in the regression class definition
                 kernel_size=3,

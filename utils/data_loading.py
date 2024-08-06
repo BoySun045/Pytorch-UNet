@@ -211,6 +211,8 @@ class BasicDataset(Dataset):
         label_mask = label_wf(mask, num_bins=30, end=8.5, start=0, exp_max=20)
             # mask out the invalid value, set its label to 0
         label_mask[np.where(df > 10)] = 0
+        label_mask[label_mask >19] = 19
+        # print("label mask unique", np.unique(label_mask))
 
         # data augmentation
         if self.transforms:

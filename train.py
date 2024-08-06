@@ -101,7 +101,7 @@ def plot_images(wandb_rgb, wandb_depth,
     axes[0, idx_offset + 1].axis('on')
 
     # Predicted mask as heatmap
-    axes[0, idx_offset + 2].imshow(wandb_mask_pred[0].cpu().detach().numpy(), cmap='viridis')
+    axes[0, idx_offset + 2].imshow(wandb_mask_pred[0].cpu().detach().numpy(), cmap='hot')
     axes[0, idx_offset + 2].set_title('Predicted Mask (Heatmap)')
     axes[0, idx_offset + 2].axis('on')
 
@@ -200,7 +200,7 @@ def train_model(
         reg_ds_factor = 1.0
 ):
     # 1. Create dataset
-    data_augmentation = True
+    data_augmentation = False
     log_transform = log_transform
 
     # Always load depth, but only use it if set 
@@ -227,7 +227,7 @@ def train_model(
     print(f"Train size: {n_train}, Validation size: {n_val}")
 
     # 4. Create data loaders
-    loader_args = dict(batch_size=batch_size, num_workers=32, pin_memory=True)
+    loader_args = dict(batch_size=batch_size, num_workers=16, pin_memory=True)
     train_loader = DataLoader(train_set, shuffle=True, **loader_args)
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
@@ -290,6 +290,10 @@ def train_model(
         loss_fn_cl = weighted_mask_cross_entropy_loss(ignore_idx=0, 
                                                       weights=np.load(multi_class_weights_path),
                                                       num_classes=model.n_classes)
+        # loss_fn_cl = weighted_mask_cross_entropy_loss(ignore_idx=0, 
+        #                                         weights=None,
+        #                                         num_classes=model.n_classes)
+                
     else:
         loss_fn_cl = nn.BCEWithLogitsLoss()
 
@@ -390,9 +394,15 @@ def train_model(
                     elif head_mode == "df_seg":
                         df_pred, masks_pred = model(images)
                         df_loss = loss_fn_df(df_pred.squeeze(1), ds_true_df)
-                        class_loss = loss_fn_cl(masks_pred.squeeze(1), true_masks.float())
+                        class_loss = loss_fn_cl(masks_pred.squeeze(1).float(), label_mask.long())
+                        class_loss += dice_loss(
+                            F.softmax(masks_pred, dim=1).float(),
+                            F.one_hot(label_mask.long(), model.n_classes).permute(0, 3, 1, 2).float(),
+                            multiclass=True
+                        )
+
                         multi_class = True if model.n_classes > 1 else False
-                        class_loss += dice_loss(F.sigmoid(masks_pred.squeeze(1)), true_masks.float(), multiclass=multi_class)
+                        # class_loss += dice_loss(F.sigmoid(masks_pred.squeeze(1)), label_mask, multiclass=multi_class)
                         loss = reg_loss_weight*df_loss + class_loss
                         reg_loss = None
 
@@ -417,7 +427,7 @@ def train_model(
 
                 # Evaluation round
                 # division_step = (n_train // (10 * batch_size))
-                division_step = 30
+                division_step = 50
                 if division_step > 0 and global_step % division_step == 0:
                     histograms = {}
                     for tag, value in model.named_parameters():
@@ -470,9 +480,12 @@ def train_model(
                         binary_mask = torch.zeros_like(true_masks)
 
                     elif head_mode == "df_seg":
-                        scheduler.step(1 - reg_loss_weight*val_score_df - val_score_cl)
+                        scheduler.step(1 - reg_loss_weight*val_score_df + val_score_cl)
                         wandb_df_pred = denormalize_df(df_pred,df_neighborhood=10).squeeze(1)
-                        wandb_mask_pred = masks_pred.squeeze(1) * (wandb_df_pred < 10)
+                        softmax_pred = F.softmax(masks_pred, dim=1)
+                        max_class_pred = torch.argmax(softmax_pred, dim=1, keepdim=True)
+                        print("min max max_class_pred", max_class_pred.min(), max_class_pred.max())
+                        wandb_mask_pred = max_class_pred.squeeze(1) * (true_df < 5)
                         binary_mask = torch.zeros_like(true_masks)
 
                     logging.info(f'Validation Classification Dice score: {val_score_cl}')

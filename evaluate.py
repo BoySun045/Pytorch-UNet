@@ -3,7 +3,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 from utils.regression_loss import weighted_mse_loss, masked_f1_loss, reverse_log_transform, log_transform
-from utils.dice_score import dice_coeff
+from utils.dice_score import dice_coeff, multiclass_dice_coeff
 from utils.df_loss import df_in_neighbor_loss, l1_loss_fn, denormalize_df, mae_loss
 from utils.utils import downsample_torch_mask
 
@@ -16,10 +16,11 @@ def evaluate(net, dataloader, device, amp, use_depth=False,
 
     # loss_fn_rg = masked_f1_loss
     loss_fn_rg = mae_loss
+    loss_fn_df = mae_loss
+
     dice_score = 0
     reg_loss = 0
     df_loss = 0
-    loss_fn_df = mae_loss
 
     autocast_device = 'cuda' if device.type == 'cuda' else 'cpu'
 
@@ -29,6 +30,7 @@ def evaluate(net, dataloader, device, amp, use_depth=False,
             true_binary_mask = batch['binary_mask']
             depth = batch['depth'] if not use_mono_depth else batch['mono_depth']
             df = batch['df']
+            label_mask = batch['label_mask']
 
             if use_depth:    
                 image = torch.cat((image, depth), dim=1)
@@ -37,7 +39,8 @@ def evaluate(net, dataloader, device, amp, use_depth=False,
             mask_true = mask_true.to(device=device, dtype=torch.float32)
             true_binary_mask = true_binary_mask.to(device=device, dtype=torch.float32)
             true_df = df.to(device=device, dtype=torch.float32)
-
+            label_mask = label_mask.to(device=device, dtype=torch.long)
+            
             ds_mask_true = downsample_torch_mask(mask_true, reg_ds_factor, ds_method='bilinear') if reg_ds_factor != 1.0 else mask_true
             ds_true_binary_mask = downsample_torch_mask(true_binary_mask, reg_ds_factor, ds_method='nearest') if reg_ds_factor != 1.0 else true_binary_mask
             ds_true_df = downsample_torch_mask(true_df, reg_ds_factor, ds_method='bilinear') if reg_ds_factor != 1.0 else true_df
@@ -70,6 +73,16 @@ def evaluate(net, dataloader, device, amp, use_depth=False,
                 print("df loss, ", df_loss)
                 # mask_true_log = log_transform(mask_true)
                 reg_loss += loss_fn_rg(mask_pred.squeeze(), mask_true.float())
+
+            elif head_mode == "df_seg":
+                df_pred, masks_pred = net(image)
+                df_pred = denormalize_df(df_pred, df_neighborhood=10)
+                df_loss += loss_fn_df(df_pred.float().squeeze(1), ds_true_df)
+                # convert to one-hot format
+                mask_true = F.one_hot(label_mask, net.n_classes).permute(0, 3, 1, 2).float()
+                mask_pred = F.one_hot(masks_pred.argmax(dim=1), net.n_classes).permute(0, 3, 1, 2).float()
+                # compute the Dice score, ignoring nothing
+                dice_score += multiclass_dice_coeff(mask_pred[:, :], mask_true[:, :], reduce_batch_first=False)
 
     net.train()
     avg_dice_score = dice_score / num_val_batches if dice_score != 0 else 0
