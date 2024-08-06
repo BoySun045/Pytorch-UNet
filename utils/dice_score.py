@@ -1,6 +1,8 @@
 import torch
 from torch import Tensor
-
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
 
 def dice_coeff(input: Tensor, target: Tensor, reduce_batch_first: bool = False, epsilon: float = 1e-6):
     # Average of Dice coefficient for all batches, or for a single mask
@@ -25,3 +27,26 @@ def dice_loss(input: Tensor, target: Tensor, multiclass: bool = False):
     # Dice loss (objective to minimize) between 0 and 1
     fn = multiclass_dice_coeff if multiclass else dice_coeff
     return 1 - fn(input, target, reduce_batch_first=True)
+
+def weighted_mask_cross_entropy_loss(ignore_idx: int = 0, weights = None, num_classes: int = 2):
+    # Cross-entropy loss for segmentation masks
+    # weights is a np.array of shape (num_classes,) with the weights for each class
+
+    # igore_idx is the index of the class to ignore, update the weights to remove the ignored_idx'th class
+    weights = np.delete(weights, ignore_idx)
+    
+    print(f"weights is {weights}")
+
+    # take the number of classes into account
+    weights = weights[:num_classes]
+    print(f"weights after num_classes is {weights}")
+    
+    # normalize the weights using the inverse of the weights input
+    weights = 1 / (weights + 1)
+    print(f"weights after inverse is {weights}")
+    norm_weights = weights / weights.sum()
+    print(f"norm_weights is {norm_weights}")
+
+    return nn.CrossEntropyLoss(weight=torch.tensor(norm_weights), ignore_index=ignore_idx)
+
+    

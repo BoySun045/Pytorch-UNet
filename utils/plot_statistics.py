@@ -16,6 +16,9 @@ def plot_class_counts_histogram(npy_file, output_file):
     class_labels = class_labels[1:]
     class_counts = class_counts[1:]
 
+    for i in range(len(class_counts)):
+        print(f"Class {i+1}: {class_counts[i]} pixels")
+
     # Plot histogram
     plt.figure(figsize=(10, 6))
     plt.bar(class_labels, class_counts, color='skyblue')

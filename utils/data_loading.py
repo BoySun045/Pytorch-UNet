@@ -209,8 +209,9 @@ class BasicDataset(Dataset):
 
         # get labeled mask
         label_mask = label_wf(mask, num_bins=30, end=8.5, start=0, exp_max=20)
+            # mask out the invalid value, set its label to 0
+        label_mask[np.where(df > 10)] = 0
 
-       
         # data augmentation
         if self.transforms:
             img = np.transpose(img, (1, 2, 0))

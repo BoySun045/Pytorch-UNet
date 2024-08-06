@@ -38,6 +38,10 @@ class PredictionModel(torch.nn.Module):
             init.initialize_head(self.df_regression_head)
             init.initialize_head(self.wf_regression_head)
 
+        elif head_config == "df_seg":
+            init.initialize_head(self.segmentation_head)
+            init.initialize_head(self.df_regression_head)
+
         self.head_mode = head_config
         self.df_neighborhood = df_neighborhood
 
@@ -105,7 +109,16 @@ class PredictionModel(torch.nn.Module):
                  wf = wf[:, :, :int(h * self.wf_regression_head.downsample_factor), :int(w * self.wf_regression_head.downsample_factor)]
             
             return df, wf
+        
+        elif self.head_mode == "df_seg":
+            masks = self.segmentation_head(decoder_output)
+            df = self.df_regression_head(decoder_output)
+
+            if h % self.output_stride != 0 or w % self.output_stride != 0:
+                masks = masks[:, :, :h, :w]
+                df = df[:, :, :int(h * self.df_regression_head.downsample_factor), :int(w * self.df_regression_head.downsample_factor)]
             
+            return df, masks
             
     @torch.no_grad()
     def predict(self, x):
@@ -133,10 +146,10 @@ class SegmentationHead(nn.Sequential):
         # activation = Activation(activation)
         # super().__init__(conv2d, upsampling, activation)
 
-        conv2d_1 = nn.Conv2d(in_channels, 64, kernel_size=3, padding=1)
+        conv2d_1 = nn.Conv2d(in_channels, 64, kernel_size=kernel_size, padding=kernel_size // 2)
         activation_1 = nn.ReLU()
         batch_norm_1 = nn.BatchNorm2d(64)
-        conv2d_2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        conv2d_2 = nn.Conv2d(64, 64, kernel_size=kernel_size, padding=kernel_size // 2)
         activation_2 = nn.ReLU()
         batch_norm_2 = nn.BatchNorm2d(64)
         conv2d_3 = nn.Conv2d(64, out_channels, kernel_size=1)

@@ -20,7 +20,7 @@ import numpy as np
 from evaluate import evaluate
 from unet import UNet, UnetResnet, TwoHeadUnet
 from utils.data_loading import BasicDataset, CarvanaDataset
-from utils.dice_score import dice_loss
+from utils.dice_score import dice_loss, weighted_mask_cross_entropy_loss
 from utils.regression_loss import mse_loss, weighted_mse_loss, masked_f1_loss, weighted_huber_loss, reverse_log_transform
 from utils.df_loss import df_in_neighbor_loss, df_normalized_loss_in_neighbor, l1_loss_fn, denormalize_df
 from utils.utils import downsample_torch_mask
@@ -38,6 +38,7 @@ dir_mask = Path(dir_path / 'weighted_mask/')
 dir_checkpoint = Path(dir_path / 'checkpoints' / datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
 dir_debug = Path(dir_path / 'debug/')
 dir_depth = Path(dir_path / 'depth/')
+multi_class_weights_path = Path("/mnt/boysunSSD/Actmap_v2_mini/debug/class_counts_exp_20_bin_30_max_8.5.npy")
 
 # make debug directory
 dir_debug.mkdir(parents=True, exist_ok=True)
@@ -285,8 +286,13 @@ def train_model(
     #     loss_fn_rg = weighted_huber_loss
 
     loss_fn_rg = masked_f1_loss
-    pos_weight = torch.tensor([2.0]).to(device)
-    loss_fn_cl = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    if model.n_classes > 1:
+        loss_fn_cl = weighted_mask_cross_entropy_loss(ignore_idx=0, 
+                                                      weights=np.load(multi_class_weights_path),
+                                                      num_classes=model.n_classes)
+    else:
+        loss_fn_cl = nn.BCEWithLogitsLoss()
+
     # loss_fn_df = df_in_neighbor_loss
     loss_fn_df = df_normalized_loss_in_neighbor
 
@@ -381,6 +387,14 @@ def train_model(
                         loss = reg_loss_weight*reg_loss + df_loss
                         class_loss = None
 
+                    elif head_mode == "df_seg":
+                        df_pred, masks_pred = model(images)
+                        df_loss = loss_fn_df(df_pred.squeeze(1), ds_true_df)
+                        class_loss = loss_fn_cl(masks_pred.squeeze(1), true_masks.float())
+                        multi_class = True if model.n_classes > 1 else False
+                        class_loss += dice_loss(F.sigmoid(masks_pred.squeeze(1)), true_masks.float(), multiclass=multi_class)
+                        loss = reg_loss_weight*df_loss + class_loss
+                        reg_loss = None
 
                 optimizer.zero_grad(set_to_none=True)
                 grad_scaler.scale(loss).backward()
@@ -452,6 +466,12 @@ def train_model(
                         scheduler.step(1 - val_score_df - reg_loss_weight*val_score_rg)
                         wandb_df_pred = denormalize_df(df_pred,df_neighborhood=10).squeeze(1)
                         masks_pred = reverse_log_transform(masks_pred)
+                        wandb_mask_pred = masks_pred.squeeze(1) * (wandb_df_pred < 10)
+                        binary_mask = torch.zeros_like(true_masks)
+
+                    elif head_mode == "df_seg":
+                        scheduler.step(1 - reg_loss_weight*val_score_df - val_score_cl)
+                        wandb_df_pred = denormalize_df(df_pred,df_neighborhood=10).squeeze(1)
                         wandb_mask_pred = masks_pred.squeeze(1) * (wandb_df_pred < 10)
                         binary_mask = torch.zeros_like(true_masks)
 
