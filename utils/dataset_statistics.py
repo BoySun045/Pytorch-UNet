@@ -9,8 +9,8 @@ from PIL import Image
 import functools
 import argparse
 
-dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")
-# dir_path = Path("/mnt/boysunSSD/Actmap_v2_mini")
+# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")
+dir_path = Path("/mnt/boysunSSD/Actmap_v2_mini")
 dir_img = Path(dir_path / 'image/')
 dir_mask = Path(dir_path / 'weighted_mask/')
 dir_depth = Path(dir_path / 'depth/')

@@ -28,8 +28,8 @@ from torchvision.utils import save_image
 import datetime 
 
 
-# dir_path = Path("/mnt/boysunSSD/Actmap_v2_mini")
-dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")  # actmap_v3 is the one after data balancing cleaning
+dir_path = Path("/mnt/boysunSSD/Actmap_v2_mini")
+# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")  # actmap_v3 is the one after data balancing cleaning
 # dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2_mini")
 # dir_path = Path("/cluster/project/cvg/boysun/one_image_dataset_3")
 # dir_path = Path("/mnt/boysunSSD//one_image_dataset_3")
@@ -69,7 +69,7 @@ def save_debug_images(batch, epoch, batch_idx, prefix='train', num_images=5):
 
 
 def plot_images(wandb_rgb, wandb_depth,
-                 true_masks, true_binary_masks,
+                 true_masks, label_mask,
                  wandb_mask_pred, binary_mask, 
                  wandb_df_pred, ds_true_df,
                  error_map, use_depth):
@@ -95,8 +95,8 @@ def plot_images(wandb_rgb, wandb_depth,
     axes[0, idx_offset].axis('on')
 
     # True binary mask
-    axes[0, idx_offset + 1].imshow(true_binary_masks[0].cpu().detach().numpy(), cmap='gray')
-    axes[0, idx_offset + 1].set_title('True Binary Mask')
+    axes[0, idx_offset + 1].imshow(label_mask[0].cpu().detach().numpy(), cmap='hot')
+    axes[0, idx_offset + 1].set_title('True Label Mask')
     axes[0, idx_offset + 1].axis('on')
 
     # Predicted mask as heatmap
@@ -141,7 +141,7 @@ def plot_images(wandb_rgb, wandb_depth,
 def log_images(experiment, optimizer, 
                val_score_cl, val_score_rg, val_score_df, 
                wandb_rgb, wandb_depth,
-               true_masks, true_binary_masks, 
+               true_masks, label_mask, 
                wandb_mask_pred, binary_mask,
                wandb_df_pred, ds_true_df, 
                global_step, epoch, histograms, use_depth):
@@ -152,7 +152,7 @@ def log_images(experiment, optimizer,
     error_map = torch.abs(ds_true_df - wandb_df_pred).cpu().detach()
     
     combined_image = plot_images(wandb_rgb, wandb_depth, 
-                                 true_masks, true_binary_masks,
+                                 true_masks, label_mask,
                                    wandb_mask_pred, binary_mask,
                                    wandb_df_pred, ds_true_df, 
                                    error_map, use_depth)
@@ -306,6 +306,7 @@ def train_model(
                 true_df = batch['df']
                 images = batch['image']
                 depth = batch['depth'] if not use_mono_depth else batch['mono_depth']
+                label_mask = batch['label_mask']
 
                 # assert images.shape[1] + depth.shape[1] == model.n_channels, \
                 assert images.shape[1] + depth.shape[1] == 4, \
@@ -321,6 +322,7 @@ def train_model(
                 true_masks = true_masks.to(device=device, dtype=torch.float32)
                 true_binary_masks = true_binary_masks.to(device=device, dtype=torch.float32)
                 true_df = true_df.to(device=device, dtype=torch.float32)
+                label_mask = label_mask.to(device=device, dtype=torch.float32)
 
                 # do downsample for gt mask 
                 ds_true_masks = downsample_torch_mask(true_masks, reg_ds_factor, "bilinear") if reg_ds_factor != 1.0 else true_masks
@@ -464,7 +466,7 @@ def train_model(
                     log_images(experiment, optimizer,
                                  val_score_cl, val_score_rg, val_score_df,
                                  wandb_rgb, wandb_depth,
-                                 ds_true_masks, true_binary_masks,
+                                 ds_true_masks, label_mask,
                                  wandb_mask_pred, binary_mask,
                                  wandb_df_pred, ds_true_df,
                                  global_step, epoch, histograms, use_depth)

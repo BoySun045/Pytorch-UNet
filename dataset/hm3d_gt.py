@@ -50,7 +50,12 @@ def min_max_scale(y, min_val, max_val):
 def reverse_min_max_scale(y, min_val, max_val):
     return y * (max_val - min_val) + min_val
 
-
+def label_wf(input, num_bins=30, end=8.5, start=0, exp_max=20):
+    exp_bins = np.geomspace(1, exp_max, num_bins)[::-1]
+    bin_edges = end - (exp_bins - exp_bins.min()) / (exp_bins.max() - exp_bins.min()) * (end - start)
+    # Subtract 1 to make bins 0-indexed, since we do clip min to be 0, there will be no -1 bin
+    label_mask = np.digitize(input, bin_edges) - 1
+    return label_mask
 
 def refine_mask(mask_numpy, kernel_size=5, erosion_iterations=1):
     """
@@ -169,7 +174,7 @@ def compute_wf(weight_mask, df, line_neighborhood=10):
 
     kernel_size = 3
     wf_filtered = wf
-    wf_filtered = median_filter(wf, size=3)
+    # wf_filtered = median_filter(wf, size=3)
     wf_filtered = maximum_filter(wf_filtered, size=kernel_size)
     wf_filtered = maximum_filter(wf_filtered, size=kernel_size)
     
