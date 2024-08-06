@@ -19,6 +19,7 @@ class BasicDataset(Dataset):
     def __init__(self, images_dir: str, mask_dir: str, depth_dir: str = None,
                   scale: float = 1.0, 
                   gen_mono_depth: bool = False,
+                  seg_num_classes: int = 1,
                   mask_suffix: str = '', data_augmentation=True, log_transform=True):
         
         self.images_dir = Path(images_dir)
@@ -26,6 +27,8 @@ class BasicDataset(Dataset):
         assert 0 < scale <= 1, 'Scale must be between 0 and 1'
         self.scale = scale
         self.mask_suffix = mask_suffix
+
+        self.seg_num_classes = seg_num_classes
 
         if depth_dir is not None:
             print("Using depth iamge in dataset")
@@ -209,9 +212,10 @@ class BasicDataset(Dataset):
 
         # get labeled mask
         label_mask = label_wf(mask, num_bins=30, end=8.5, start=0, exp_max=20)
-            # mask out the invalid value, set its label to 0
+        # mask out the invalid value, set its label to 0
         label_mask[np.where(df > 10)] = 0
-        label_mask[label_mask >19] = 19
+        # set class larger than the maximum class to the maximum class ( -1 since the class starts from 0)
+        label_mask[label_mask > self.seg_num_classes - 1 ] = self.seg_num_classes -1
         # print("label mask unique", np.unique(label_mask))
 
         # data augmentation
@@ -289,9 +293,11 @@ class CarvanaDataset(BasicDataset):
     def __init__(self, images_dir, mask_dir, depth_dir, 
                 scale=1, 
                 gen_mono_depth = False,
+                seg_num_classes=1,
                 data_augmentation=True, log_transform=True):
         
         super().__init__(images_dir, mask_dir, depth_dir, 
                         scale, 
                         gen_mono_depth = gen_mono_depth,
+                        seg_num_classes=seg_num_classes,
                         mask_suffix='', data_augmentation=data_augmentation, log_transform=log_transform)

@@ -28,8 +28,8 @@ from torchvision.utils import save_image
 import datetime 
 
 
-dir_path = Path("/mnt/boysunSSD/Actmap_v2_mini")
-# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")  # actmap_v3 is the one after data balancing cleaning
+# dir_path = Path("/mnt/boysunSSD/Actmap_v2_mini")
+dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")  # actmap_v3 is the one after data balancing cleaning
 # dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2_mini")
 # dir_path = Path("/cluster/project/cvg/boysun/one_image_dataset_3")
 # dir_path = Path("/mnt/boysunSSD//one_image_dataset_3")
@@ -38,7 +38,7 @@ dir_mask = Path(dir_path / 'weighted_mask/')
 dir_checkpoint = Path(dir_path / 'checkpoints' / datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
 dir_debug = Path(dir_path / 'debug/')
 dir_depth = Path(dir_path / 'depth/')
-multi_class_weights_path = Path("/mnt/boysunSSD/Actmap_v2_mini/debug/class_counts_exp_20_bin_30_max_8.5.npy")
+multi_class_weights_path = Path("/cluster/project/cvg/boysun/Actmap_v3/debug/class_counts_exp_20_bin_30_max_8.5.npy")
 
 # make debug directory
 dir_debug.mkdir(parents=True, exist_ok=True)
@@ -97,12 +97,12 @@ def plot_images(wandb_rgb, wandb_depth,
 
     # True binary mask
     axes[0, idx_offset + 1].imshow(label_mask[0].cpu().detach().numpy(), cmap='hot')
-    axes[0, idx_offset + 1].set_title('True Label Mask')
+    axes[0, idx_offset + 1].set_title('True Label Mask, max: ' + str(label_mask.max().item()))
     axes[0, idx_offset + 1].axis('on')
 
     # Predicted mask as heatmap
     axes[0, idx_offset + 2].imshow(wandb_mask_pred[0].cpu().detach().numpy(), cmap='hot')
-    axes[0, idx_offset + 2].set_title('Predicted Mask (Heatmap)')
+    axes[0, idx_offset + 2].set_title('Predicted Mask, max: ' + str(wandb_mask_pred.max().item()))
     axes[0, idx_offset + 2].axis('on')
 
     # Error map as heatmap
@@ -208,12 +208,14 @@ def train_model(
         dataset = CarvanaDataset(dir_img, dir_mask,dir_depth, 
                                  img_scale,
                                  gen_mono_depth = use_mono_depth,
+                                 seg_num_classes=model.n_classes,
                                  data_augmentation=data_augmentation, log_transform=log_transform)
         
     except (AssertionError, RuntimeError, IndexError):
         dataset = BasicDataset(dir_img, dir_mask, dir_depth,
                                 img_scale, 
                                 gen_mono_depth = use_mono_depth,
+                                seg_num_classes=model.n_classes,
                                 data_augmentation=data_augmentation, log_transform=log_transform)
 
     # 2. Subset the dataset
@@ -427,7 +429,7 @@ def train_model(
 
                 # Evaluation round
                 # division_step = (n_train // (10 * batch_size))
-                division_step = 50
+                division_step = 200
                 if division_step > 0 and global_step % division_step == 0:
                     histograms = {}
                     for tag, value in model.named_parameters():
