@@ -6,9 +6,11 @@ from tqdm import tqdm
 from matplotlib import pyplot as plt
 from concurrent.futures import ThreadPoolExecutor
 from PIL import Image
+import functools
+import argparse
 
-# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")
-dir_path = Path("/mnt/boysunSSD/Actmap_v2_mini")
+dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")
+# dir_path = Path("/mnt/boysunSSD/Actmap_v2_mini")
 dir_img = Path(dir_path / 'image/')
 dir_mask = Path(dir_path / 'weighted_mask/')
 dir_depth = Path(dir_path / 'depth/')
@@ -21,12 +23,16 @@ if not dir_debug.exists():
 def log_transform_mask(y):
     return np.log1p(y)  # log1p(x) = log(1 + x)
 
-def create_label_mask_fast(array, bin_edges=None):
-    array = np.clip(array, 0, 2980)  # Clip values to the range [0, 3000]
+def create_label_mask_fast(array, num_bins, bin_edges=None):
+    max = 3000
+    array = np.clip(array, 0, max)  # Clip values to the range [0, 3000]
+    log_max = np.log1p(max)
     array = log_transform_mask(array)
     if bin_edges==None:
         # bin_edges = np.arange(0, 3100, 100)
-        bin_edges = np.arange(0, 8, 0.25)  # create actually 33 bins ,0), (0, 0.25), (0.25, 0.5), ..., (7.75, 8)
+        # bin_edges = np.arange(0, 8, 0.25)  # create actually 33 bins ,0), (0, 0.25), (0.25, 0.5), ..., (7.75, 8)
+        exp_bins = np.geomspace(1, 20, num_bins)[::-1]
+        bin_edges = 8.5 - (exp_bins - exp_bins.min()) / (exp_bins.max() - exp_bins.min()) * 8.5
     # Use digitize to get the bin index for each element in the array
     label_mask = np.digitize(array, bin_edges) - 1  # Subtract 1 to make bins 0-indexed, since we do clip min to be 0, there will be no -1 bin
     return label_mask
@@ -80,11 +86,11 @@ def load_weighted_mask_from_npz(filename):
 #         print(f"Error processing file {npz_file}: {e}")
 #         return None
 
-def process_file(npz_file):
+def process_file(npz_file, num_bins=30):
     try:
         weighted_mask = load_weighted_mask_from_npz(dir_mask / npz_file)
-        label_mask = create_label_mask_fast(weighted_mask)
-        class_counts = count_classes(label_mask, 32)
+        label_mask = create_label_mask_fast(weighted_mask ,num_bins )
+        class_counts = count_classes(label_mask, num_bins)
         max_value = weighted_mask.max()
         # Save the semantic map as an RGB image
         # save_semantic_map(label_mask, npz_file)
@@ -138,18 +144,26 @@ def process_and_delete_file(npz_file):
         return None
 
 if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser(description=' .')
+    parser.add_argument('--file_suffix', '-fs',type=str, help='Path to the class_counts.npy file')
+
+    suffix = parser.parse_args().file_suffix
+
     weighted_mask_npz_list = get_npz_file_list_under_dir(dir_mask)
     print("Load from dir: ", dir_mask)
     print("Number of npz files: ", len(weighted_mask_npz_list))
 
+    num_bins = 30
 
-    total_class_counts = np.zeros(32, dtype=int)
+    total_class_counts = np.zeros(num_bins, dtype=int)
     max_values = []
 
+    # Create a partial function with num_bins as an argument
+    process_file_partial = functools.partial(process_file, num_bins=num_bins)
 
     with ThreadPoolExecutor(max_workers=32) as executor:
-        # results = list(tqdm(executor.map(process_and_delete_file, weighted_mask_npz_list), total=len(weighted_mask_npz_list)))
-        results = list(tqdm(executor.map(process_file, weighted_mask_npz_list), total=len(weighted_mask_npz_list)))
+        results = list(tqdm(executor.map(process_file_partial, weighted_mask_npz_list), total=len(weighted_mask_npz_list)))
 
     # Aggregate class counts
     for result in results:
@@ -164,80 +178,18 @@ if __name__ == "__main__":
     for i, count in enumerate(total_class_counts):
         print(f"Class {i}: {count} pixels")
 
-    with open(dir_debug / "class_counts.txt", "w") as f:
+    with open(dir_debug / "class_counts_{}.txt".format(suffix), "w") as f:
         for i, count in enumerate(total_class_counts):
             f.write(f"Class {i}: {count} pixels\n")
     
     # Save class counts to a .npy file
-    np.save(dir_debug / "class_counts.npy", total_class_counts)
+    np.save(dir_debug / "class_counts_{}.npy".format(suffix), total_class_counts)
     
     # Save max values in both .txt and .npy formats
-    with open(dir_debug / "max_values.txt", "w") as f:
+    with open(dir_debug / "max_values_{}.txt".format(suffix), "w") as f:
         for idx, max_val in enumerate(max_values):
             f.write(f"File {idx}: Max value = {max_val}\n")
     
     # Save max values to a .npy file
-    np.save(dir_debug / "max_values.npy", np.array(max_values))
+    np.save(dir_debug / "max_values_{}.npy".format(suffix), np.array(max_values))
     
-    # mask_max_value_list = []
-    # mask_mean_value_list = []
-    # mask_median_value_list = []
-    # non_negative_pixel_ratio_list = []
-    
-    # for mask_max_value, mask_mean_value, mask_median_value, non_negative_pixel_ratio in results:
-    #     mask_max_value_list.append(mask_max_value)
-    #     mask_mean_value_list.append(mask_mean_value)
-    #     mask_median_value_list.append(mask_median_value)
-    #     non_negative_pixel_ratio_list.append(non_negative_pixel_ratio)
-
-
-    # global_max_value = max(mask_max_value_list)
-
-    # # save result to a npy file
-    # np.save(dir_debug / 'mask_max_value_list.npy', np.array(mask_max_value_list))
-    # np.save(dir_debug / 'mask_mean_value_list.npy', np.array(mask_mean_value_list))
-    # np.save(dir_debug / 'non_negative_pixel_ratio_list.npy', np.array(non_negative_pixel_ratio_list))
-    # np.save(dir_debug / 'mask_median_value_list.npy', np.array(mask_median_value_list))
-
-    # # plot the distribution of max value, x axis is the max value, y axis is the number of masks, interval is 100
-    # # and save the result to the debug folder,
-    # plt.hist(mask_max_value_list, bins=range(0, int(global_max_value) + 20, 20))
-    # plt.xlabel('Max value of weighted mask')
-    # plt.ylabel('Number of masks')
-    # plt.title('Distribution of max value of weighted mask')
-    # plt.savefig(dir_debug / 'max_value_distribution.png')
-
-    # # do the same for the mean value
-    # # first, clear the current figure
-    # plt.clf()
-    # plt.hist(mask_mean_value_list, bins=range(0, int(global_max_value) + 20, 20))
-    # plt.xlabel('Mean value of weighted mask')
-    # plt.ylabel('Number of masks')
-    # plt.title('Distribution of mean value of weighted mask')
-    # plt.savefig(dir_debug / 'mean_value_distribution.png')
-
-    # #
-    # plt.clf()
-    # plt.hist(mask_median_value_list, bins=range(0, int(global_max_value) + 20, 20))
-    # plt.xlabel('Median value of weighted mask')
-    # plt.ylabel('Number of masks')
-    # plt.title('Distribution of median value of weighted mask')
-    # plt.savefig(dir_debug / 'median_value_distribution.png')
-
-
-    # # and then plot a 2D histogram of the max value and mean value, interval is the same as above, and save the result to the debug folder
-    # plt.clf()
-    # plt.hist2d(mask_max_value_list, mask_mean_value_list, bins=(range(0, int(global_max_value) + 100, 100), range(0, int(global_max_value) + 100, 100)))
-    # plt.xlabel('Max value of weighted mask')
-    # plt.ylabel('Mean value of weighted mask')
-    # plt.title('2D distribution of max value and mean value of weighted mask')
-    # plt.colorbar()
-    # plt.savefig(dir_debug / '2D_distribution.png')
-
-    # # plot the percentage of non-negative pixels in the mask, interval is 1 percent, and save the result to the debug folder
-    # plt.clf()
-    # plt.hist(non_negative_pixel_ratio_list, bins=np.linspace(0, 1, 101))
-    # plt.xlabel('Percentage of non-negative pixels in the mask')
-    # plt.ylabel('Number of masks')
-    # plt.title('Distribution of percentage of non-negative pixels in the mask')
-    # plt.savefig(dir_debug / 'non_negative_pixel_ratio_distribution.png')
