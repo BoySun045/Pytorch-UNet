@@ -34,3 +34,15 @@ def df_wf_to_linemap(df, wf,
     print("linemap min: ", linemap.min())
 
     return linemap
+
+
+def df_clsmask_to_linemap(df, cls_mask, 
+                          df_neighborhood=10, threshold=0.5):
+    
+    # fisrt, get binary mask from distance field
+    bin_mask = df_to_linemap(df, df_neighborhood, threshold)
+    cls_mask = cls_mask.squeeze().cpu().numpy()
+    linemap = np.zeros_like(cls_mask)
+    linemap[bin_mask > 0] = cls_mask[bin_mask > 0]
+
+    return linemap

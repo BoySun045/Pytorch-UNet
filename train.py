@@ -28,8 +28,8 @@ from torchvision.utils import save_image
 import datetime 
 
 
-# dir_path = Path("/mnt/boysunSSD/Actmap_v2_mini")
-dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")  # actmap_v3 is the one after data balancing cleaning
+dir_path = Path("/mnt/boysunSSD/Actmap_v2_mini")
+# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")  # actmap_v3 is the one after data balancing cleaning
 # dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2_mini")
 # dir_path = Path("/cluster/project/cvg/boysun/one_image_dataset_3")
 # dir_path = Path("/mnt/boysunSSD//one_image_dataset_3")
@@ -38,8 +38,8 @@ dir_mask = Path(dir_path / 'weighted_mask/')
 dir_checkpoint = Path(dir_path / 'checkpoints' / datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
 dir_debug = Path(dir_path / 'debug/')
 dir_depth = Path(dir_path / 'depth/')
-multi_class_weights_path = Path("/cluster/project/cvg/boysun/Actmap_v3/debug/class_counts_exp_20_bin_30_max_8.5.npy")
-# multi_class_weights_path = Path("/mnt/boysunSSD/Actmap_v2_mini/debug/class_counts_exp_20_bin_30_max_8.5.npy")
+# multi_class_weights_path = Path("/cluster/project/cvg/boysun/Actmap_v3/debug/class_counts_exp_20_bin_30_max_8.5.npy")
+multi_class_weights_path = Path("/mnt/boysunSSD/Actmap_v2_mini/debug/class_counts_exp_20_bin_30_max_8.5.npy")
 
 # make debug directory
 dir_debug.mkdir(parents=True, exist_ok=True)
@@ -93,17 +93,19 @@ def plot_images(wandb_rgb, wandb_depth,
 
     # True mask as heatmap
     axes[0, idx_offset].imshow(true_masks[0].cpu().detach().numpy(), cmap='viridis')
-    axes[0, idx_offset].set_title('True weights Mask, max: ' + str(true_masks.max().item())) 
+    axes[0, idx_offset].set_title('True weights Mask, max: ' + str(true_masks[0].max().item())) 
     axes[0, idx_offset].axis('on')
 
     # True binary mask
     axes[0, idx_offset + 1].imshow(label_mask[0].cpu().detach().numpy(), cmap='hot')
-    axes[0, idx_offset + 1].set_title('True Label Mask, max: ' + str(label_mask.max().item()))
+    axes[0, idx_offset + 1].set_title('True Label Mask, max: ' + str(label_mask[0].max().item()))
+    plt.colorbar(axes[0, idx_offset + 1].imshow(label_mask[0].cpu().detach().numpy(), cmap='hot'), ax=axes[0, idx_offset + 1])
     axes[0, idx_offset + 1].axis('on')
 
     # Predicted mask as heatmap
     axes[0, idx_offset + 2].imshow(wandb_mask_pred[0].cpu().detach().numpy(), cmap='hot')
-    axes[0, idx_offset + 2].set_title('Predicted Mask, max: ' + str(wandb_mask_pred.max().item()))
+    axes[0, idx_offset + 2].set_title('Predicted Mask, max: ' + str(wandb_mask_pred[0].max().item()))
+    plt.colorbar(axes[0, idx_offset + 2].imshow(wandb_mask_pred[0].cpu().detach().numpy(), cmap='hot'), ax=axes[0, idx_offset + 2])
     axes[0, idx_offset + 2].axis('on')
 
     # Error map as heatmap
@@ -187,7 +189,7 @@ def train_model(
         img_scale: float = 0.5,
         amp: bool = False,
         weight_decay: float = 1e-8,
-        momentum: float = 0.9,
+        momentum: float = 0.95,
         gradient_clipping: float = 1.0,
         use_depth: bool = False,
         use_mono_depth: bool = False,
@@ -201,7 +203,7 @@ def train_model(
         reg_ds_factor = 1.0
 ):
     # 1. Create dataset
-    data_augmentation = True
+    data_augmentation = False
     log_transform = log_transform
 
     # Always load depth, but only use it if set 
@@ -270,10 +272,11 @@ def train_model(
     ''')
 
     # 4. Set up the optimizer, the loss, the learning rate scheduler and the loss scaling for AMP
-    optimizer = optim.RMSprop(model.parameters(),
-                              lr=learning_rate, weight_decay=weight_decay, momentum=momentum)
+    # optimizer = optim.RMSprop(model.parameters(),
+    #                           lr=learning_rate, weight_decay=weight_decay, momentum=momentum)
     #use adam optimizer
-    # optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+
     if lr_decay:
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=10, factor=0.5, min_lr=5e-6)  # goal: maximize score
     else:
@@ -398,9 +401,9 @@ def train_model(
                         df_pred, masks_pred = model(images)
                         df_loss = loss_fn_df(df_pred.squeeze(1), ds_true_df)
                         class_loss = loss_fn_cl(masks_pred.squeeze(1).float(), label_mask.long())
-                        valid_mask = ds_true_df < 5
+                        # valid_mask = ds_true_df < 10
+                        valid_mask = label_mask != 0 
                         # add one extra dim to valid mask, size as same as number of classes
-                        
                         valid_mask = valid_mask.unsqueeze(1).repeat(1, model.n_classes, 1, 1)
                         class_loss += dice_loss(
                             F.softmax(masks_pred, dim=1).float(),
@@ -433,7 +436,7 @@ def train_model(
 
                 # Evaluation round
                 # division_step = (n_train // (10 * batch_size))
-                division_step = 100
+                division_step = 20
                 if division_step > 0 and global_step % division_step == 0:
                     histograms = {}
                     for tag, value in model.named_parameters():
@@ -491,7 +494,7 @@ def train_model(
                         softmax_pred = F.softmax(masks_pred, dim=1)
                         max_class_pred = torch.argmax(softmax_pred, dim=1, keepdim=True)
                         # wandb_mask_pred = max_class_pred.squeeze(1) * (true_df < 10)
-                        wandb_mask_pred = max_class_pred.squeeze(1) * (wandb_df_pred < 10)
+                        wandb_mask_pred = max_class_pred.squeeze(1) * (label_mask != 0)
                         binary_mask = torch.zeros_like(true_masks)
 
                     logging.info(f'Validation Classification Dice score: {val_score_cl}')

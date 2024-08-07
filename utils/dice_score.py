@@ -24,6 +24,7 @@ def dice_coeff(input: Tensor, target: Tensor, valid_mask, reduce_batch_first: bo
     sets_sum = input.sum(dim=sum_dim) + target.sum(dim=sum_dim)
     sets_sum = torch.where(sets_sum == 0, inter, sets_sum)
     dice = (inter + epsilon) / (sets_sum + epsilon)
+
     return dice.mean()
 
 def multiclass_dice_coeff(input: Tensor, target: Tensor, valid_mask: Tensor, reduce_batch_first: bool = False, epsilon: float = 1e-6):
@@ -60,6 +61,6 @@ def weighted_mask_cross_entropy_loss(ignore_idx: int = 0, weights = None, num_cl
 
     
     norm_weights = torch.tensor(norm_weights, dtype=torch.float32).cuda()
-    return nn.CrossEntropyLoss(weight=norm_weights, ignore_index=ignore_idx)
+    return nn.CrossEntropyLoss(weight=norm_weights, ignore_index=ignore_idx if ignore_idx is not None else -100)
 
     

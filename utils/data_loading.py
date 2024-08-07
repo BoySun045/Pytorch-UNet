@@ -213,7 +213,10 @@ class BasicDataset(Dataset):
         # get labeled mask
         label_mask = label_wf(mask, num_bins=30, end=8.5, start=0, exp_max=20)
         # mask out the invalid value, set its label to 0
-        label_mask[np.where(df > 10)] = 0
+        label_mask[np.where(df >= 10)] = 0
+        # set the valid pixel in label mask to 1 if it was 0
+        # label_mask[np.logical_and(label_mask == 0, df < 10)] = 1
+
         # set class larger than the maximum class to the maximum class ( -1 since the class starts from 0)
         label_mask[label_mask > self.seg_num_classes - 1 ] = self.seg_num_classes -1
         # print("label mask unique", np.unique(label_mask))
