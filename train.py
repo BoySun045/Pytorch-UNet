@@ -92,7 +92,7 @@ def plot_images(wandb_rgb, wandb_depth,
 
     # True mask as heatmap
     axes[0, idx_offset].imshow(true_masks[0].cpu().detach().numpy(), cmap='viridis')
-    axes[0, idx_offset].set_title('True Mask (Heatmap)')
+    axes[0, idx_offset].set_title('True weights Mask, max: ' + str(true_masks.max().item())) 
     axes[0, idx_offset].axis('on')
 
     # True binary mask
@@ -200,7 +200,7 @@ def train_model(
         reg_ds_factor = 1.0
 ):
     # 1. Create dataset
-    data_augmentation = False
+    data_augmentation = True
     log_transform = log_transform
 
     # Always load depth, but only use it if set 
