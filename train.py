@@ -29,16 +29,17 @@ import datetime
 
 
 # dir_path = Path("/mnt/boysunSSD/Actmap_v2_mini")
-dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")  # actmap_v3 is the one after data balancing cleaning
+# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")  # actmap_v3 is the one after data balancing cleaning
 # dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2_mini")
 # dir_path = Path("/cluster/project/cvg/boysun/one_image_dataset_3")
-# dir_path = Path("/mnt/boysunSSD//one_image_dataset_3")
+dir_path = Path("/mnt/boysunSSD//one_image_dataset_3")
 dir_img = Path(dir_path / 'image/')
 dir_mask = Path(dir_path / 'weighted_mask/')
 dir_checkpoint = Path(dir_path / 'checkpoints' / datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
 dir_debug = Path(dir_path / 'debug/')
 dir_depth = Path(dir_path / 'depth/')
-multi_class_weights_path = Path("/cluster/project/cvg/boysun/Actmap_v3/debug/class_counts_exp_20_bin_30_max_8.5.npy")
+# multi_class_weights_path = Path("/cluster/project/cvg/boysun/Actmap_v3/debug/class_counts_exp_20_bin_30_max_8.5.npy")
+multi_class_weights_path = Path("/mnt/boysunSSD/Actmap_v2_mini/debug/class_counts_exp_20_bin_30_max_8.5.npy")
 
 # make debug directory
 dir_debug.mkdir(parents=True, exist_ok=True)
@@ -274,7 +275,7 @@ def train_model(
     #use adam optimizer
     # optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     if lr_decay:
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=15, factor=0.5, min_lr=5e-6)  # goal: maximize score
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=10, factor=0.5, min_lr=5e-6)  # goal: maximize score
     else:
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=10000000, factor=0.5, min_lr=5e-5)  # goal: minimize loss
     
@@ -397,14 +398,17 @@ def train_model(
                         df_pred, masks_pred = model(images)
                         df_loss = loss_fn_df(df_pred.squeeze(1), ds_true_df)
                         class_loss = loss_fn_cl(masks_pred.squeeze(1).float(), label_mask.long())
+                        valid_mask = ds_true_df < 10
+                        # add one extra dim to valid mask, size as same as number of classes
+                        
+                        valid_mask = valid_mask.unsqueeze(1).repeat(1, model.n_classes, 1, 1)
                         class_loss += dice_loss(
                             F.softmax(masks_pred, dim=1).float(),
                             F.one_hot(label_mask.long(), model.n_classes).permute(0, 3, 1, 2).float(),
-                            multiclass=True
+                            valid_mask,
+                            multiclass=True if model.n_classes > 1 else False
                         )
 
-                        multi_class = True if model.n_classes > 1 else False
-                        # class_loss += dice_loss(F.sigmoid(masks_pred.squeeze(1)), label_mask, multiclass=multi_class)
                         loss = reg_loss_weight*df_loss + class_loss
                         reg_loss = None
 
@@ -429,7 +433,7 @@ def train_model(
 
                 # Evaluation round
                 # division_step = (n_train // (10 * batch_size))
-                division_step = 200
+                division_step = 20
                 if division_step > 0 and global_step % division_step == 0:
                     histograms = {}
                     for tag, value in model.named_parameters():
@@ -486,8 +490,8 @@ def train_model(
                         wandb_df_pred = denormalize_df(df_pred,df_neighborhood=10).squeeze(1)
                         softmax_pred = F.softmax(masks_pred, dim=1)
                         max_class_pred = torch.argmax(softmax_pred, dim=1, keepdim=True)
-                        print("min max max_class_pred", max_class_pred.min(), max_class_pred.max())
-                        wandb_mask_pred = max_class_pred.squeeze(1) * (true_df < 5)
+                        # print("min max max_class_pred", max_class_pred.min(), max_class_pred.max())
+                        wandb_mask_pred = max_class_pred.squeeze(1) * (true_df < 10)
                         binary_mask = torch.zeros_like(true_masks)
 
                     logging.info(f'Validation Classification Dice score: {val_score_cl}')
@@ -589,7 +593,7 @@ if __name__ == '__main__':
             use_mono_depth = args.use_mono_depth,
             reg_loss_weight=args.reg_loss_weight,
             head_mode = head_mode,
-            weight_decay=1e-8,
+            weight_decay=1e-7,
             reg_ds_factor=args.regression_downsample_factor
         )
     except torch.cuda.OutOfMemoryError:
@@ -611,6 +615,6 @@ if __name__ == '__main__':
             use_mono_depth = args.use_mono_depth,
             reg_loss_weight=args.reg_loss_weight,
             head_mode = head_mode,
-            weight_decay=1e-8,
+            weight_decay=1e-7,
             reg_ds_factor=args.regression_downsample_factor
         )

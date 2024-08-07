@@ -40,7 +40,7 @@ def evaluate(net, dataloader, device, amp, use_depth=False,
             true_binary_mask = true_binary_mask.to(device=device, dtype=torch.float32)
             true_df = df.to(device=device, dtype=torch.float32)
             label_mask = label_mask.to(device=device, dtype=torch.long)
-            
+
             ds_mask_true = downsample_torch_mask(mask_true, reg_ds_factor, ds_method='bilinear') if reg_ds_factor != 1.0 else mask_true
             ds_true_binary_mask = downsample_torch_mask(true_binary_mask, reg_ds_factor, ds_method='nearest') if reg_ds_factor != 1.0 else true_binary_mask
             ds_true_df = downsample_torch_mask(true_df, reg_ds_factor, ds_method='bilinear') if reg_ds_factor != 1.0 else true_df
@@ -65,12 +65,12 @@ def evaluate(net, dataloader, device, amp, use_depth=False,
             
             elif head_mode == "df_wf":
                 df_pred, mask_pred = net(image)
-                print("df pred")
+                # print("df pred")
                 df_pred = denormalize_df(df_pred, df_neighborhood=10)
-                print("df_pred shape", df_pred.shape)
-                print("true df shape", ds_true_df.shape)
+                # print("df_pred shape", df_pred.shape)
+                # print("true df shape", ds_true_df.shape)
                 df_loss += loss_fn_df(df_pred.float().squeeze(1), ds_true_df)
-                print("df loss, ", df_loss)
+                # print("df loss, ", df_loss)
                 # mask_true_log = log_transform(mask_true)
                 reg_loss += loss_fn_rg(mask_pred.squeeze(), mask_true.float())
 
@@ -82,7 +82,9 @@ def evaluate(net, dataloader, device, amp, use_depth=False,
                 mask_true = F.one_hot(label_mask, net.n_classes).permute(0, 3, 1, 2).float()
                 mask_pred = F.one_hot(masks_pred.argmax(dim=1), net.n_classes).permute(0, 3, 1, 2).float()
                 # compute the Dice score, ignoring nothing
-                dice_score += multiclass_dice_coeff(mask_pred[:, :], mask_true[:, :], reduce_batch_first=False)
+                valid_mask = ds_true_df < 10
+                valid_mask = valid_mask.unsqueeze(1).repeat(1, net.n_classes, 1, 1)
+                dice_score += multiclass_dice_coeff(mask_pred, mask_true, valid_mask, reduce_batch_first=True)
 
     net.train()
     avg_dice_score = dice_score / num_val_batches if dice_score != 0 else 0
