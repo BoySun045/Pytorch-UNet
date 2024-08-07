@@ -29,17 +29,17 @@ import datetime
 
 
 # dir_path = Path("/mnt/boysunSSD/Actmap_v2_mini")
-# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")  # actmap_v3 is the one after data balancing cleaning
+dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")  # actmap_v3 is the one after data balancing cleaning
 # dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2_mini")
 # dir_path = Path("/cluster/project/cvg/boysun/one_image_dataset_3")
-dir_path = Path("/mnt/boysunSSD//one_image_dataset_3")
+# dir_path = Path("/mnt/boysunSSD//one_image_dataset_3")
 dir_img = Path(dir_path / 'image/')
 dir_mask = Path(dir_path / 'weighted_mask/')
 dir_checkpoint = Path(dir_path / 'checkpoints' / datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
 dir_debug = Path(dir_path / 'debug/')
 dir_depth = Path(dir_path / 'depth/')
-# multi_class_weights_path = Path("/cluster/project/cvg/boysun/Actmap_v3/debug/class_counts_exp_20_bin_30_max_8.5.npy")
-multi_class_weights_path = Path("/mnt/boysunSSD/Actmap_v2_mini/debug/class_counts_exp_20_bin_30_max_8.5.npy")
+multi_class_weights_path = Path("/cluster/project/cvg/boysun/Actmap_v3/debug/class_counts_exp_20_bin_30_max_8.5.npy")
+# multi_class_weights_path = Path("/mnt/boysunSSD/Actmap_v2_mini/debug/class_counts_exp_20_bin_30_max_8.5.npy")
 
 # make debug directory
 dir_debug.mkdir(parents=True, exist_ok=True)
@@ -398,7 +398,7 @@ def train_model(
                         df_pred, masks_pred = model(images)
                         df_loss = loss_fn_df(df_pred.squeeze(1), ds_true_df)
                         class_loss = loss_fn_cl(masks_pred.squeeze(1).float(), label_mask.long())
-                        valid_mask = ds_true_df < 10
+                        valid_mask = ds_true_df < 5
                         # add one extra dim to valid mask, size as same as number of classes
                         
                         valid_mask = valid_mask.unsqueeze(1).repeat(1, model.n_classes, 1, 1)
@@ -433,7 +433,7 @@ def train_model(
 
                 # Evaluation round
                 # division_step = (n_train // (10 * batch_size))
-                division_step = 20
+                division_step = 100
                 if division_step > 0 and global_step % division_step == 0:
                     histograms = {}
                     for tag, value in model.named_parameters():
@@ -490,8 +490,8 @@ def train_model(
                         wandb_df_pred = denormalize_df(df_pred,df_neighborhood=10).squeeze(1)
                         softmax_pred = F.softmax(masks_pred, dim=1)
                         max_class_pred = torch.argmax(softmax_pred, dim=1, keepdim=True)
-                        # print("min max max_class_pred", max_class_pred.min(), max_class_pred.max())
-                        wandb_mask_pred = max_class_pred.squeeze(1) * (true_df < 10)
+                        # wandb_mask_pred = max_class_pred.squeeze(1) * (true_df < 10)
+                        wandb_mask_pred = max_class_pred.squeeze(1) * (wandb_df_pred < 10)
                         binary_mask = torch.zeros_like(true_masks)
 
                     logging.info(f'Validation Classification Dice score: {val_score_cl}')

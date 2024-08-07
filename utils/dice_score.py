@@ -11,9 +11,6 @@ def dice_coeff(input: Tensor, target: Tensor, valid_mask, reduce_batch_first: bo
     if valid_mask is None:
         valid_mask = torch.ones_like(input)
     
-    print(f"input size is {input.size()}")
-    print(f"target size is {target.size()}")
-    print(f"valid_mask size is {valid_mask.size()}")
     assert input.size() == target.size() == valid_mask.size()
     assert input.dim() == 3 or not reduce_batch_first
 
