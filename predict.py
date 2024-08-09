@@ -48,6 +48,21 @@ def predict_img(net,
 
     return result
 
+def get_bin_edges(n_classes):
+
+    if n_classes == 11:
+        bin_edges = [np.log1p(1), np.log1p(50), np.log1p(150), 
+                    np.log1p(300), np.log1p(450), np.log1p(750), np.log1p(1000), 
+                    np.log1p(1500), np.log1p(2000),  np.log1p(2500), np.log1p(3500)]
+
+    elif n_classes == 7:
+        bin_edges = [np.log1p(1), np.log1p(100), np.log1p(300), np.log1p(500),
+                np.log1p(1000), np.log1p(2000), np.log1p(3500)]
+
+    else:
+        raise ValueError("Invalid number of classes")
+
+    return bin_edges
 
 def get_args():
     parser = argparse.ArgumentParser(description='Predict masks from input images')
@@ -69,45 +84,61 @@ def get_args():
     return parser.parse_args()
 
 
-def get_output_filenames(args):
-    def _generate_name(fn):
-        return f'{os.path.splitext(fn)[0]}_OUT.png'
+def create_pred_vis_overlay(line_map, img, scale):
 
-    return args.output or list(map(_generate_name, args.input))
-
-
-def mask_to_image(mask: np.ndarray, mask_values):
-    if isinstance(mask_values[0], list):
-        out = np.zeros((mask.shape[-2], mask.shape[-1], len(mask_values[0])), dtype=np.uint8)
-    elif mask_values == [0, 1]:
-        out = np.zeros((mask.shape[-2], mask.shape[-1]), dtype=bool)
-    else:
-        out = np.zeros((mask.shape[-2], mask.shape[-1]), dtype=np.uint8)
-
-    if mask.ndim == 3:
-        mask = np.argmax(mask, axis=0)
-
-    for i, v in enumerate(mask_values):
-        out[mask == i] = v
-
-    return Image.fromarray(out)
-
-
-def overlay_img_with_mask(img, mask, alpha=0.5):
-    # Convert the image to a numpy array
-    overlay_img = np.array(img.copy())
+    # Normalize the line_map to [0, 255] for heatmap
+    line_map_normalized = cv2.normalize(line_map, None, 0, 255, cv2.NORM_MINMAX)
+    line_map_normalized = np.uint8(line_map_normalized)
     
-    # Define the pink color
-    pink = np.array([255, 20, 147], dtype=np.uint8)
-    
-    # Get the positions where the mask is 1
-    positive_pixels = np.where(mask == 1)
-    
-    # Blend the pink color with the original image
-    overlay_img[positive_pixels] = (alpha * pink + (1 - alpha) * overlay_img[positive_pixels]).astype(np.uint8)
-    
-    return Image.fromarray(overlay_img)
+    # Generate heatmap from normalized line_map
+    heatmap = cv2.applyColorMap(line_map_normalized, cv2.COLORMAP_HOT)
 
+    width, height = line_map_normalized.shape
+
+    # Resize and center crop the image
+    print("img size: ", img.size)
+    vis_img = img.resize((int(img.width * scale), int(img.height * scale)), Image.BILINEAR)
+    print("vis_img size: ", vis_img.size)
+    center_crop = transforms.CenterCrop((width, height))
+    vis_img = center_crop(vis_img)
+    vis_img = np.array(vis_img)
+
+    # Convert BGR to RGB
+    vis_img = cv2.cvtColor(vis_img, cv2.COLOR_BGR2RGB)
+
+    # Overlay heatmap on the original image
+    overlay_img = cv2.addWeighted(vis_img, 0.4, heatmap, 0.6, 0)
+    overlay_img = cv2.cvtColor(overlay_img, cv2.COLOR_RGB2BGR)
+
+    # Use matplotlib to create the colorbar and combine it with the image
+    fig, ax = plt.subplots(figsize=(8, 8))
+
+    # Display the overlay image
+    ax.imshow(overlay_img)
+    ax.axis('off')  # Hide axes
+
+        # Create a colorbar with the corresponding min/max values
+    cax = fig.add_axes([0.92, 0.25, 0.03, 0.5])  # Position: [left, bottom, width, height]
+    norm = plt.Normalize(vmin=np.min(line_map), vmax=np.max(line_map))
+    sm = plt.cm.ScalarMappable(cmap='hot', norm=norm)
+    sm.set_array([])
+
+    # Add the colorbar to the image
+    cbar = fig.colorbar(sm, cax=cax)
+    cbar.set_label('Value', rotation=270, labelpad=15)
+
+    # Add min label to the colorbar
+    cbar.ax.text(1.1, 0, f'{np.min(line_map):.2f}', ha='left', va='bottom', transform=cbar.ax.transAxes)
+
+    # convert the plt to a cv2 image
+    fig.canvas.draw()
+    img = np.frombuffer(fig.canvas.buffer_rgba(), np.uint8)
+    img = img.reshape(fig.canvas.get_width_height()[::-1] + (4,))
+    img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
+
+    plt.close()
+
+    return img
 
 
 if __name__ == '__main__':
@@ -152,6 +183,7 @@ if __name__ == '__main__':
     net.load_state_dict(state_dict)
 
     logging.info('Model loaded!')
+    print("model num classes: ", net.n_classes)
 
     # get all images in in_files folder with .jpg extension, into a list
     print(in_files)
@@ -212,105 +244,60 @@ if __name__ == '__main__':
             df_pred = result[0]
             label_mask_pred = result[1]
 
-            if args.classes == 11:
-                bin_edges = [np.log1p(1), np.log1p(50), np.log1p(150), 
-                            np.log1p(300), np.log1p(450), np.log1p(750), np.log1p(1000), 
-                            np.log1p(1500), np.log1p(2000),  np.log1p(2500), np.log1p(3500)]
-
-            elif args.classes == 7:
-                bin_edges = [np.log1p(1), np.log1p(100), np.log1p(300), np.log1p(500),
-                     np.log1p(1000), np.log1p(2000), np.log1p(3500)]
-
+            bin_edges = get_bin_edges(net.n_classes)
             line_mask, line_map = df_clsmask_to_linemap(df=df_pred, cls_mask=label_mask_pred, 
-                                                        df_neighborhood=10, threshold=1.0,
+                                                        df_neighborhood=10, threshold=0.05,
                                                         bin_edges=bin_edges)
             
-            # Normalize the line_map to [0, 255] for heatmap
-            line_map_normalized = cv2.normalize(line_map, None, 0, 255, cv2.NORM_MINMAX)
-            line_map_normalized = np.uint8(line_map_normalized)
-            
-            # Generate heatmap from normalized line_map
-            heatmap = cv2.applyColorMap(line_map_normalized, cv2.COLORMAP_HOT)
-
-            # Resize and center crop the image
-            print("img size: ", img.size)
-            vis_img = img.resize((int(img.width * args.scale), int(img.height * args.scale)), Image.BILINEAR)
-            print("vis_img size: ", vis_img.size)
-            center_crop = transforms.CenterCrop((224, 224))
-            vis_img = center_crop(vis_img)
-            vis_img = np.array(vis_img)
-
-            # Convert BGR to RGB
-            vis_img = cv2.cvtColor(vis_img, cv2.COLOR_BGR2RGB)
-
-            # Overlay heatmap on the original image
-            overlay_img = cv2.addWeighted(vis_img, 0.4, heatmap, 0.6, 0)
-            overlay_img = cv2.cvtColor(overlay_img, cv2.COLOR_RGB2BGR)
-
-            # Use matplotlib to create the colorbar and combine it with the image
-            fig, ax = plt.subplots(figsize=(8, 8))
-
-            # Display the overlay image
-            ax.imshow(overlay_img)
-            ax.axis('off')  # Hide axes
-
-             # Create a colorbar with the corresponding min/max values
-            cax = fig.add_axes([0.92, 0.25, 0.03, 0.5])  # Position: [left, bottom, width, height]
-            norm = plt.Normalize(vmin=np.min(line_map), vmax=np.max(line_map))
-            sm = plt.cm.ScalarMappable(cmap='hot', norm=norm)
-            sm.set_array([])
-
-            # Add the colorbar to the image
-            cbar = fig.colorbar(sm, cax=cax)
-            cbar.set_label('Value', rotation=270, labelpad=15)
-
-            # Add min label to the colorbar
-            cbar.ax.text(1.1, 0, f'{np.min(line_map):.2f}', ha='left', va='bottom', transform=cbar.ax.transAxes)
-
-            # Save the final image with the colorbar
-            plt.savefig(out_overlay_imgs[i], bbox_inches='tight', pad_inches=0.1)
-            plt.close()
-                        
-        if head_mode == "df_wf":
-            df_pred = result[0]
-            wf_pred = result[1]
-
-            weighted_map = df_wf_to_linemap(df=df_pred, wf=wf_pred, 
-                                            df_neighborhood=10, threshold=5.0)
-            
-            global_max = 3000.0
-            global_min = 1e-6
-
-            # normalize the weighted map using min-max scaling, and use global min and max
-            weighted_map = (weighted_map - global_min) / (global_max - global_min) * 255
-
-            # self-normalize the weighted map
-            weighted_map = (weighted_map - weighted_map.min()) / (weighted_map.max() - weighted_map.min()) * 255
-
-            # get a heatmap from the weighted map, 
-            # the higher the value, the more bright yellow the pixel
-            # the lower the value, the more dark black the pixel
-            heatmap = cv2.applyColorMap(np.uint8(weighted_map), cv2.COLORMAP_HOT)
-
-            # overlay the heatmap to the original image
-            # first, need to get the same size as the original image, which is first resize and then center crop
-            # first, resize using args.scale
-            # then, center crop to 320x320
-            print("img size: ", img.size)
-            vis_img = img.resize((int(img.width * args.scale), int(img.height * args.scale)), Image.BILINEAR)
-            # then do numpy center crop
-            print("vis_img size: ", vis_img.size)
-            center_crop = transforms.CenterCrop((320, 320))
-            vis_img = center_crop(vis_img)
-            print("vis_img size after center crop: ", vis_img.size)
-            print("heatmap size: ", heatmap.shape)
-            vis_img = np.array(vis_img)
-            # this is currently BGR image, convert to RGB
-            vis_img = cv2.cvtColor(vis_img, cv2.COLOR_BGR2RGB)
-            # overlay the heatmap to the original image
-            overlay_img = cv2.addWeighted(vis_img, 0.5, heatmap, 0.5, 0)
+            overlay_img = create_pred_vis_overlay(line_map, img, args.scale)
             cv2.imwrite(out_overlay_imgs[i], overlay_img)
             logging.info(f'Overlay image saved to {out_overlay_imgs[i]}')
-            
 
+
+            # # Normalize the line_map to [0, 255] for heatmap
+            # line_map_normalized = cv2.normalize(line_map, None, 0, 255, cv2.NORM_MINMAX)
+            # line_map_normalized = np.uint8(line_map_normalized)
+            
+            # # Generate heatmap from normalized line_map
+            # heatmap = cv2.applyColorMap(line_map_normalized, cv2.COLORMAP_HOT)
+
+            # # Resize and center crop the image
+            # print("img size: ", img.size)
+            # vis_img = img.resize((int(img.width * args.scale), int(img.height * args.scale)), Image.BILINEAR)
+            # print("vis_img size: ", vis_img.size)
+            # center_crop = transforms.CenterCrop((224, 224))
+            # vis_img = center_crop(vis_img)
+            # vis_img = np.array(vis_img)
+
+            # # Convert BGR to RGB
+            # vis_img = cv2.cvtColor(vis_img, cv2.COLOR_BGR2RGB)
+
+            # # Overlay heatmap on the original image
+            # overlay_img = cv2.addWeighted(vis_img, 0.4, heatmap, 0.6, 0)
+            # overlay_img = cv2.cvtColor(overlay_img, cv2.COLOR_RGB2BGR)
+
+            # # Use matplotlib to create the colorbar and combine it with the image
+            # fig, ax = plt.subplots(figsize=(8, 8))
+
+            # # Display the overlay image
+            # ax.imshow(overlay_img)
+            # ax.axis('off')  # Hide axes
+
+            #  # Create a colorbar with the corresponding min/max values
+            # cax = fig.add_axes([0.92, 0.25, 0.03, 0.5])  # Position: [left, bottom, width, height]
+            # norm = plt.Normalize(vmin=np.min(line_map), vmax=np.max(line_map))
+            # sm = plt.cm.ScalarMappable(cmap='hot', norm=norm)
+            # sm.set_array([])
+
+            # # Add the colorbar to the image
+            # cbar = fig.colorbar(sm, cax=cax)
+            # cbar.set_label('Value', rotation=270, labelpad=15)
+
+            # # Add min label to the colorbar
+            # cbar.ax.text(1.1, 0, f'{np.min(line_map):.2f}', ha='left', va='bottom', transform=cbar.ax.transAxes)
+
+            # # Save the final image with the colorbar
+            # plt.savefig(out_overlay_imgs[i], bbox_inches='tight', pad_inches=0.1)
+            # plt.close()
+                        
 
