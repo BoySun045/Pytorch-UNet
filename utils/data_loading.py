@@ -69,7 +69,7 @@ class BasicDataset(Dataset):
             mask = np.array(Image.fromarray(mask).resize((int(mask.shape[1] * scale), int(mask.shape[0] * scale),), resample=Image.NEAREST))
 
             # global min_max
-            mask_weight_global_max = 3000.0
+            mask_weight_global_max = 4000.0
             mask_weight_global_min = 0
             
             # local min_max
@@ -211,7 +211,8 @@ class BasicDataset(Dataset):
         mask = self.get_wf(mask, df, 1.0, 10.0) # scale does not need to be changed here since previous preprocess already did resize
 
         # get labeled mask
-        label_mask = label_wf(mask, num_bins=30, end=8.5, start=0, exp_max=20)
+        # label_mask = label_wf(mask, num_bins=30, end=8.5, start=0, exp_max=20)
+        label_mask = label_wf(mask)
         # mask out the invalid value, set its label to 0
         label_mask[np.where(df >= 10)] = 0
         # set the valid pixel in label mask to 1 if it was 0

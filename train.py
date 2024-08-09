@@ -28,8 +28,8 @@ from torchvision.utils import save_image
 import datetime 
 
 
-dir_path = Path("/mnt/boysunSSD/Actmap_v2_mini")
-# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")  # actmap_v3 is the one after data balancing cleaning
+# dir_path = Path("/mnt/boysunSSD/Actmap_v2_mini")
+dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")  # actmap_v3 is the one after data balancing cleaning
 # dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2_mini")
 # dir_path = Path("/cluster/project/cvg/boysun/one_image_dataset_3")
 # dir_path = Path("/mnt/boysunSSD//one_image_dataset_3")
@@ -39,7 +39,9 @@ dir_checkpoint = Path(dir_path / 'checkpoints' / datetime.datetime.now().strftim
 dir_debug = Path(dir_path / 'debug/')
 dir_depth = Path(dir_path / 'depth/')
 # multi_class_weights_path = Path("/cluster/project/cvg/boysun/Actmap_v3/debug/class_counts_exp_20_bin_30_max_8.5.npy")
-multi_class_weights_path = Path("/mnt/boysunSSD/Actmap_v2_mini/debug/class_counts_exp_20_bin_30_max_8.5.npy")
+multi_class_weights_path = Path("/cluster/project/cvg/boysun/Actmap_v3/debug/class_counts_uni_11.npy")
+
+# multi_class_weights_path = Path("/mnt/boysunSSD/Actmap_v2_mini/debug/class_counts_exp_20_bin_30_max_8.5.npy")
 
 # make debug directory
 dir_debug.mkdir(parents=True, exist_ok=True)
@@ -189,7 +191,7 @@ def train_model(
         img_scale: float = 0.5,
         amp: bool = False,
         weight_decay: float = 1e-8,
-        momentum: float = 0.95,
+        momentum: float = 0.9,
         gradient_clipping: float = 1.0,
         use_depth: bool = False,
         use_mono_depth: bool = False,
@@ -203,7 +205,7 @@ def train_model(
         reg_ds_factor = 1.0
 ):
     # 1. Create dataset
-    data_augmentation = False
+    data_augmentation = True
     log_transform = log_transform
 
     # Always load depth, but only use it if set 
@@ -412,6 +414,12 @@ def train_model(
                             multiclass=True if model.n_classes > 1 else False
                         )
 
+                        # start to decay reg_loss_weight after 200 steps, min to 0.1
+                        if global_step > 5000:
+                            reg_loss_weight = max(2.0, reg_loss_weight*0.99)
+                        loss = reg_loss_weight*df_loss + class_loss
+                        reg_loss = None
+                        
                         loss = reg_loss_weight*df_loss + class_loss
                         reg_loss = None
 
@@ -436,7 +444,7 @@ def train_model(
 
                 # Evaluation round
                 # division_step = (n_train // (10 * batch_size))
-                division_step = 20
+                division_step = 200
                 if division_step > 0 and global_step % division_step == 0:
                     histograms = {}
                     for tag, value in model.named_parameters():

@@ -50,11 +50,28 @@ def min_max_scale(y, min_val, max_val):
 def reverse_min_max_scale(y, min_val, max_val):
     return y * (max_val - min_val) + min_val
 
-def label_wf(input, num_bins=30, end=8.5, start=0, exp_max=20):
-    exp_bins = np.geomspace(1, exp_max, num_bins)[::-1]
-    bin_edges = end - (exp_bins - exp_bins.min()) / (exp_bins.max() - exp_bins.min()) * (end - start)
-    # Subtract 1 to make bins 0-indexed, since we do clip min to be 0, there will be no -1 bin
-    label_mask = np.digitize(input, bin_edges) - 1
+# def label_wf(input, num_bins=30, end=8.5, start=0, exp_max=20):
+#     exp_bins = np.geomspace(1, exp_max, num_bins)[::-1]
+#     bin_edges = end - (exp_bins - exp_bins.min()) / (exp_bins.max() - exp_bins.min()) * (end - start)
+#     # Subtract 1 to make bins 0-indexed, since we do clip min to be 0, there will be no -1 bin
+#     label_mask = np.digitize(input, bin_edges) - 1
+#     return label_mask
+
+def label_wf(input):
+
+    # uni_11
+    bin_edges = [np.log1p(1), np.log1p(50), np.log1p(150), 
+                    np.log1p(300), np.log1p(450), np.log1p(750), np.log1p(1000), 
+                    np.log1p(1500), np.log1p(2000),  np.log1p(2500), np.log1p(3500)]
+
+    # uni_7
+    # bin_edges = [np.log1p(1), np.log1p(100), np.log1p(300), np.log1p(500),
+    #             np.log1p(1000), np.log1p(2000), np.log1p(3500)]
+    # uni_5
+    # bin_edges = [np.log1p(1), np.log1p(300), np.log1p(800),
+    #                  np.log1p(1500), np.log1p(3000)]
+    
+    label_mask = np.digitize(input, bin_edges)
     return label_mask
 
 def refine_mask(mask_numpy, kernel_size=5, erosion_iterations=1):

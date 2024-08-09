@@ -9,8 +9,8 @@ from PIL import Image
 import functools
 import argparse
 
-# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")
-dir_path = Path("/mnt/boysunSSD/Actmap_v2_mini")
+dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")
+# dir_path = Path("/mnt/boysunSSD/Actmap_v2_mini")
 dir_img = Path(dir_path / 'image/')
 dir_mask = Path(dir_path / 'weighted_mask/')
 dir_depth = Path(dir_path / 'depth/')
@@ -24,17 +24,33 @@ def log_transform_mask(y):
     return np.log1p(y)  # log1p(x) = log(1 + x)
 
 def create_label_mask_fast(array, num_bins, bin_edges=None):
-    max = 3000
+    max = 3500
     array = np.clip(array, 0, max)  # Clip values to the range [0, 3000]
     log_max = np.log1p(max)
     array = log_transform_mask(array)
     if bin_edges==None:
         # bin_edges = np.arange(0, 3100, 100)
-        # bin_edges = np.arange(0, 8, 0.25)  # create actually 33 bins ,0), (0, 0.25), (0.25, 0.5), ..., (7.75, 8)
-        exp_bins = np.geomspace(1, 20, num_bins)[::-1]
-        bin_edges = 8.5 - (exp_bins - exp_bins.min()) / (exp_bins.max() - exp_bins.min()) * 8.5
+        # bin_edges = np.arange(0, 8, 0.25)  # crea te actually 33 bins ,0), (0, 0.25), (0.25, 0.5), ..., (7.75, 8)
+ 
+        # exp_bins = np.geomspace(1, 20, num_bins)[::-1]
+        # bin_edges = 8.6 - (exp_bins - exp_bins.min()) / (exp_bins.max() - exp_bins.min()) * 8.5
+        
+        # uni_11
+        # bin_edges = [np.log1p(1), np.log1p(50), np.log1p(150), 
+        #              np.log1p(300), np.log1p(450), np.log1p(750), np.log1p(1000), 
+        #              np.log1p(1500), np.log1p(2000),  np.log1p(2500), np.log1p(3500)]
+        
+        # uni_7
+        # bin_edges = [np.log1p(1), np.log1p(100), np.log1p(300), np.log1p(500),
+        #              np.log1p(1000), np.log1p(2000), np.log1p(3500)]
+
+        # uni_5
+        bin_edges = [np.log1p(1), np.log1p(300), np.log1p(800),
+                     np.log1p(1500), np.log1p(3000)]
+                
     # Use digitize to get the bin index for each element in the array
-    label_mask = np.digitize(array, bin_edges) - 1  # Subtract 1 to make bins 0-indexed, since we do clip min to be 0, there will be no -1 bin
+
+    label_mask = np.digitize(array, bin_edges)  # Subtract 1 to make bins 0-indexed, since we do clip min to be 0, there will be no -1 bin
     return label_mask
 
 def count_classes(label_mask, num_classes):
@@ -154,7 +170,7 @@ if __name__ == "__main__":
     print("Load from dir: ", dir_mask)
     print("Number of npz files: ", len(weighted_mask_npz_list))
 
-    num_bins = 30
+    num_bins = 15
 
     total_class_counts = np.zeros(num_bins, dtype=int)
     max_values = []
