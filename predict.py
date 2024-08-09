@@ -31,10 +31,11 @@ def predict_img(net,
     img = img.unsqueeze(0)
     img = img.to(device=device, dtype=torch.float32)
 
+    print("img size: ", img.size())
     depth = torch.from_numpy(BasicDataset.preprocess(depth_img, scale_factor, is_mask=False, is_depth=True))
     depth = depth.unsqueeze(0)
     depth = depth.to(device=device, dtype=torch.float32)
-
+    print("depth size: ", depth.size())
     
     # do a center crop to both image
     center_crop = transforms.CenterCrop((img_size[0], img_size[1]))
@@ -103,6 +104,8 @@ def create_pred_vis_overlay(line_map, img, scale):
     vis_img = center_crop(vis_img)
     vis_img = np.array(vis_img)
 
+    print("vis_img size: ", vis_img.shape)
+
     # Convert BGR to RGB
     vis_img = cv2.cvtColor(vis_img, cv2.COLOR_BGR2RGB)
 
@@ -113,6 +116,7 @@ def create_pred_vis_overlay(line_map, img, scale):
     # Use matplotlib to create the colorbar and combine it with the image
     fig, ax = plt.subplots(figsize=(8, 8))
 
+    print("about to display plt")
     # Display the overlay image
     ax.imshow(overlay_img)
     ax.axis('off')  # Hide axes
@@ -136,6 +140,7 @@ def create_pred_vis_overlay(line_map, img, scale):
     img = img.reshape(fig.canvas.get_width_height()[::-1] + (4,))
     img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
 
+    print("about to close plt")
     plt.close()
 
     return img
