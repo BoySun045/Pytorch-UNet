@@ -13,7 +13,8 @@ from unet import UNet, UnetResnet, TwoHeadUnet
 from utils.utils import plot_img_and_mask
 import cv2
 import albumentations as A
-from utils.pred_to_line import df_to_linemap, df_wf_to_linemap
+from utils.pred_to_line import df_to_linemap, df_wf_to_linemap, df_clsmask_to_linemap
+import matplotlib.pyplot as plt
 
 def predict_img(net,
                 full_img,
@@ -21,7 +22,8 @@ def predict_img(net,
                 device,
                 scale_factor = 0.5,
                 out_threshold=0.5,
-                use_depth=True):
+                use_depth=True,
+                img_size = [224,224]):
     
 
     net.eval()
@@ -35,7 +37,7 @@ def predict_img(net,
 
     
     # do a center crop to both image
-    center_crop = transforms.CenterCrop((320, 320))
+    center_crop = transforms.CenterCrop((img_size[0], img_size[1]))
     img = center_crop(img)
     depth = center_crop(depth)
 
@@ -159,7 +161,7 @@ if __name__ == '__main__':
     out_overlay_imgs = []
 
     for f in files:
-        if f.endswith('.jpg'):
+        if f.endswith('.jpg') or f.endswith('.png'):
             in_imgs.append(os.path.join(in_files, f))
             out_imgs.append(os.path.join(out_files, f))
             out_overlay_imgs.append(os.path.join(out_overlay_files, f))
@@ -176,7 +178,6 @@ if __name__ == '__main__':
             # depth is with png extension, not jpg, covert depth_filename to png
             depth_filename = depth_filename.replace('.jpg', '.png')
             depth = cv2.imread(depth_filename, cv2.IMREAD_GRAYSCALE)
-            # img = np.concatenate([np.array(img), np.array(depth)], axis=-1)
             
         result = predict_img(net=net,
                            full_img=img,
@@ -184,7 +185,8 @@ if __name__ == '__main__':
                            scale_factor=args.scale,
                            out_threshold=args.mask_threshold,
                            device=device,
-                           use_depth=args.use_depth)
+                           use_depth=args.use_depth,
+                           img_size=[224,224])
         
         if head_mode == 'df':
             # prediction is a distance field
@@ -205,6 +207,70 @@ if __name__ == '__main__':
             cv2.imwrite(out_overlay_filename, line_map)
             logging.info(f'Line map saved to {out_overlay_filename}')
         
+
+        if head_mode == "df_seg":
+            df_pred = result[0]
+            label_mask_pred = result[1]
+
+            if args.classes == 11:
+                bin_edges = [np.log1p(1), np.log1p(50), np.log1p(150), 
+                            np.log1p(300), np.log1p(450), np.log1p(750), np.log1p(1000), 
+                            np.log1p(1500), np.log1p(2000),  np.log1p(2500), np.log1p(3500)]
+
+            elif args.classes == 7:
+                bin_edges = [np.log1p(1), np.log1p(100), np.log1p(300), np.log1p(500),
+                     np.log1p(1000), np.log1p(2000), np.log1p(3500)]
+
+            line_mask, line_map = df_clsmask_to_linemap(df=df_pred, cls_mask=label_mask_pred, 
+                                                        df_neighborhood=10, threshold=1.0,
+                                                        bin_edges=bin_edges)
+            
+            # Normalize the line_map to [0, 255] for heatmap
+            line_map_normalized = cv2.normalize(line_map, None, 0, 255, cv2.NORM_MINMAX)
+            line_map_normalized = np.uint8(line_map_normalized)
+            
+            # Generate heatmap from normalized line_map
+            heatmap = cv2.applyColorMap(line_map_normalized, cv2.COLORMAP_HOT)
+
+            # Resize and center crop the image
+            print("img size: ", img.size)
+            vis_img = img.resize((int(img.width * args.scale), int(img.height * args.scale)), Image.BILINEAR)
+            print("vis_img size: ", vis_img.size)
+            center_crop = transforms.CenterCrop((224, 224))
+            vis_img = center_crop(vis_img)
+            vis_img = np.array(vis_img)
+
+            # Convert BGR to RGB
+            vis_img = cv2.cvtColor(vis_img, cv2.COLOR_BGR2RGB)
+
+            # Overlay heatmap on the original image
+            overlay_img = cv2.addWeighted(vis_img, 0.4, heatmap, 0.6, 0)
+            overlay_img = cv2.cvtColor(overlay_img, cv2.COLOR_RGB2BGR)
+
+            # Use matplotlib to create the colorbar and combine it with the image
+            fig, ax = plt.subplots(figsize=(8, 8))
+
+            # Display the overlay image
+            ax.imshow(overlay_img)
+            ax.axis('off')  # Hide axes
+
+             # Create a colorbar with the corresponding min/max values
+            cax = fig.add_axes([0.92, 0.25, 0.03, 0.5])  # Position: [left, bottom, width, height]
+            norm = plt.Normalize(vmin=np.min(line_map), vmax=np.max(line_map))
+            sm = plt.cm.ScalarMappable(cmap='hot', norm=norm)
+            sm.set_array([])
+
+            # Add the colorbar to the image
+            cbar = fig.colorbar(sm, cax=cax)
+            cbar.set_label('Value', rotation=270, labelpad=15)
+
+            # Add min label to the colorbar
+            cbar.ax.text(1.1, 0, f'{np.min(line_map):.2f}', ha='left', va='bottom', transform=cbar.ax.transAxes)
+
+            # Save the final image with the colorbar
+            plt.savefig(out_overlay_imgs[i], bbox_inches='tight', pad_inches=0.1)
+            plt.close()
+                        
         if head_mode == "df_wf":
             df_pred = result[0]
             wf_pred = result[1]
@@ -247,20 +313,4 @@ if __name__ == '__main__':
             logging.info(f'Overlay image saved to {out_overlay_imgs[i]}')
             
 
-            # line_map = df_to_linemap(df_pred, df_neighborhood=10, threshold=0.45)
-            # # save the distance field as a heatmap image
-            # out_filename = out_imgs[i]
-            # # normalize the distance field to 0-255
-            # df_pred = df_pred.squeeze().cpu().numpy()
-            # df_pred = (df_pred - df_pred.min()) / (df_pred.max() - df_pred.min()) * 255
-            # # convert the distance field to a heatmap image
-            # heatmap = cv2.applyColorMap(np.uint8(df_pred), cv2.COLORMAP_VIRIDIS)
-            # cv2.imwrite(out_filename, heatmap)
-            # logging.info(f'Distance field saved to {out_filename}')
-
-            # # print number of positive pixels in the line map
-            # line_map[line_map == 1] = 255
-            # out_overlay_filename = out_overlay_imgs[i]
-            # cv2.imwrite(out_overlay_filename, line_map)
-            # logging.info(f'Line map saved to {out_overlay_filename}')
 

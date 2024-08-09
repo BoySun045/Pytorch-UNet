@@ -9,15 +9,15 @@ from PIL import Image
 import functools
 import argparse
 
-dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")
-# dir_path = Path("/mnt/boysunSSD/Actmap_v2_mini")
-dir_img = Path(dir_path / 'image/')
-dir_mask = Path(dir_path / 'weighted_mask/')
-dir_depth = Path(dir_path / 'depth/')
-dir_debug = Path(dir_path / "debug")
+# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")
+# # dir_path = Path("/mnt/boysunSSD/Actmap_v2_mini")
+# dir_img = Path(dir_path / 'image/')
+# dir_mask = Path(dir_path / 'weighted_mask/')
+# dir_depth = Path(dir_path / 'depth/')
+# dir_debug = Path(dir_path / "debug")
 
-if not dir_debug.exists():
-    dir_debug.mkdir()
+# if not dir_debug.exists():
+#     dir_debug.mkdir()
 
 # Log transformation
 def log_transform_mask(y):
@@ -52,6 +52,22 @@ def create_label_mask_fast(array, num_bins, bin_edges=None):
 
     label_mask = np.digitize(array, bin_edges)  # Subtract 1 to make bins 0-indexed, since we do clip min to be 0, there will be no -1 bin
     return label_mask
+
+def reverse_label_mask(label_mask, bin_edges):
+    # Calculate the average of the bin edges for each bin
+    bin_values = [(bin_edges[i-1] + bin_edges[i]) / 2 for i in range(1, len(bin_edges))]
+
+    # Create an output array with the same shape as label_mask
+    reversed_array = np.zeros_like(label_mask, dtype=np.float32)
+
+    # Map each label in the label_mask back to the corresponding bin value
+    for i in range(1, len(bin_edges)):
+        reversed_array[label_mask == i] = bin_values[i-1]
+
+    # Apply the exponential transform to reverse the log1p operation
+    reversed_array = np.expm1(reversed_array)
+
+    return reversed_array
 
 def count_classes(label_mask, num_classes):
     # Initialize an array to hold the counts for each class

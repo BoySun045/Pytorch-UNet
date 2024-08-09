@@ -1,6 +1,7 @@
 import numpy as np
 from utils.df_loss import df_in_neighbor_loss, l1_loss_fn, denormalize_df
 from utils.regression_loss import reverse_log_transform
+from utils.dataset_statistics import reverse_label_mask
 
 def df_to_linemap(df, df_neighborhood=10, threshold=0.5):
     """
@@ -36,13 +37,24 @@ def df_wf_to_linemap(df, wf,
     return linemap
 
 
+
 def df_clsmask_to_linemap(df, cls_mask, 
-                          df_neighborhood=10, threshold=0.5):
+                          df_neighborhood=10, 
+                          threshold=0.5,
+                          bin_edges=None):
     
     # fisrt, get binary mask from distance field
     bin_mask = df_to_linemap(df, df_neighborhood, threshold)
+    cls_mask = cls_mask.argmax(dim=1, keepdim=False)
     cls_mask = cls_mask.squeeze().cpu().numpy()
-    linemap = np.zeros_like(cls_mask)
-    linemap[bin_mask > 0] = cls_mask[bin_mask > 0]
+    print("cls mask shape: ", cls_mask.shape)
+    print("cls mask max: ", cls_mask.max())
+    print("cls mask min: ", cls_mask.min())
+    reverse_mask = reverse_label_mask(cls_mask, bin_edges)
+    print("reverse mask shape: ", reverse_mask.shape)
+    print("reverse mask max: ", reverse_mask.max())
+    print("reverse mask min: ", reverse_mask.min())
+    linemap = np.zeros_like(reverse_mask)
+    linemap[bin_mask > 0] = reverse_mask[bin_mask > 0]
 
-    return linemap
+    return bin_mask, linemap
