@@ -35,7 +35,9 @@ dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")  # actmap_v3 is the one
 # dir_path = Path("/mnt/boysunSSD//one_image_dataset_3")
 dir_img = Path(dir_path / 'image/')
 dir_mask = Path(dir_path / 'weighted_mask/')
-dir_checkpoint = Path(dir_path / 'checkpoints' / datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+# dir_checkpoint = Path(dir_path / 'checkpoints' / datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+dir_checkpoint = Path(Path('/cluster/scratch/boysun/checkpoints') / datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+
 dir_debug = Path(dir_path / 'debug/')
 dir_depth = Path(dir_path / 'depth/')
 # multi_class_weights_path = Path("/cluster/project/cvg/boysun/Actmap_v3/debug/class_counts_exp_20_bin_30_max_8.5.npy")
@@ -239,7 +241,11 @@ def train_model(
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
     # (Initialize logging)
-    experiment = wandb.init(project='U-Net-resnet-v3', resume='allow', anonymous='must')
+    experiment = wandb.init(project='U-Net-resnet-v3', 
+                            resume='allow', 
+                            anonymous='must',
+                            dir="/cluster/scratch/boysun/wandb")
+    
     experiment.config.update(
         dict(epochs=epochs, 
              batch_size=batch_size, 
@@ -522,7 +528,7 @@ def train_model(
                                  global_step, epoch, histograms, use_depth)
 
 
-        if save_checkpoint and epoch % 2 == 0:
+        if save_checkpoint and epoch % 1 == 0:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
             use_depth_str = 'depth' if use_depth else 'no_depth'
