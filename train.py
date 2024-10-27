@@ -28,8 +28,8 @@ from torchvision.utils import save_image
 import datetime 
 
 
-# dir_path = Path("/mnt/boysunSSD/Actmap_v2_mini")
-dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")  # actmap_v3 is the one after data balancing cleaning
+dir_path = Path("/media/boysun/Extreme Pro/Actmap_v2_mini")
+# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")  # actmap_v3 is the one after data balancing cleaning
 # dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2_mini")
 # dir_path = Path("/cluster/project/cvg/boysun/one_image_dataset_3")
 # dir_path = Path("/mnt/boysunSSD//one_image_dataset_3")
@@ -39,9 +39,9 @@ dir_checkpoint = Path(dir_path / 'checkpoints' / datetime.datetime.now().strftim
 dir_debug = Path(dir_path / 'debug/')
 dir_depth = Path(dir_path / 'depth/')
 # multi_class_weights_path = Path("/cluster/project/cvg/boysun/Actmap_v3/debug/class_counts_exp_20_bin_30_max_8.5.npy")
-multi_class_weights_path = Path("/cluster/project/cvg/boysun/Actmap_v3/debug/class_counts_uni_11.npy")
+# multi_class_weights_path = Path("/cluster/project/cvg/boysun/Actmap_v3/debug/class_counts_uni_11.npy")
 
-# multi_class_weights_path = Path("/mnt/boysunSSD/Actmap_v2_mini/debug/class_counts_exp_20_bin_30_max_8.5.npy")
+multi_class_weights_path = Path("/media/boysun/Extreme Pro/Actmap_v2_mini/debug/class_counts_uni_11.npy")
 
 # make debug directory
 dir_debug.mkdir(parents=True, exist_ok=True)
@@ -194,6 +194,7 @@ def train_model(
         momentum: float = 0.9,
         gradient_clipping: float = 1.0,
         use_depth: bool = False,
+        only_depth: bool = False,
         use_mono_depth: bool = False,
         reg_loss_weight: float = 1.0,
         head_mode: str = 'segmentation',
@@ -250,6 +251,7 @@ def train_model(
              dataset_portion=dataset_portion,
              do_data_augmentation=data_augmentation,
              use_depth=use_depth,
+             only_depth=only_depth,
              use_mono_depth = use_mono_depth,
              img_scale=img_scale,
              regloss_weight = reg_loss_weight,
@@ -335,7 +337,10 @@ def train_model(
                 images = images.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
                 depth = depth.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
 
-                images = torch.cat([images, depth], dim=1) if use_depth else images
+                if not only_depth:
+                    images = torch.cat([images, depth], dim=1) if use_depth else images
+                else:
+                    images = depth
 
                 true_masks = true_masks.to(device=device, dtype=torch.float32)
                 true_binary_masks = true_binary_masks.to(device=device, dtype=torch.float32)
@@ -455,7 +460,9 @@ def train_model(
                             histograms['Gradients/' + tag] = wandb.Histogram(value.grad.data.cpu())
 
                     val_score_cl, val_score_rg, val_score_df = evaluate(model, val_loader, device, amp, 
-                                                          use_depth=use_depth, use_mono_depth = use_mono_depth,
+                                                          use_depth=use_depth, 
+                                                          only_depth = only_depth,
+                                                          use_mono_depth = use_mono_depth,
                                                           head_mode = head_mode,
                                                           reg_ds_factor=reg_ds_factor)
 
@@ -527,7 +534,7 @@ def train_model(
             state_dict = model.state_dict()
             use_depth_str = 'depth' if use_depth else 'no_depth'
             reg_weights = str(reg_loss_weight)
-            torch.save(state_dict, str(dir_checkpoint / f'CP_epoch{epoch}_{use_depth_str}_{reg_weights}.pth'))
+            torch.save(state_dict, str(dir_checkpoint / f'CP_epoch{epoch}_{use_depth_str}_{only_depth}_{reg_weights}.pth'))
             logging.info(f'Checkpoint {epoch} saved!')
 
 
@@ -546,6 +553,7 @@ def get_args():
     parser.add_argument('--classes', '-c', type=int, default=1, help='Number of classes')
     parser.add_argument('--reg_loss_weight', '-rw', type=float, default=1.0, help='Weight of regression loss')
     parser.add_argument('--use_depth','-ud', action='store_true', default=False, help='Use depth image')
+    parser.add_argument('--only_depth','-od', action='store_true', default=False, help='Only use depth image')
     parser.add_argument('--use_mono_depth','-umd', action='store_true', default=False, help='Use mono depth image')
     parser.add_argument('--head_mode', type=str, default='segmentation', help='both or segmentation or regression')
     parser.add_argument('--regression_downsample_factor','-rdf', type=float, default=1.0, help='Downsample factor for regression head')
@@ -564,12 +572,18 @@ if __name__ == '__main__':
     # n_channels=3 for RGB images
     # n_channels=4 for RGB-D images
     # n_classes is the number of probabilities you want to get per pixel
-    if args.use_depth:
+    if args.use_depth and not args.only_depth:
         model = TwoHeadUnet(classes=args.classes,
                             in_channels=4,
                             head_config = head_mode,
                             regression_downsample_factor=args.regression_downsample_factor)
-        
+
+    if args.use_depth and args.only_depth:
+        model = TwoHeadUnet(classes=args.classes,
+                            in_channels=1,
+                            head_config = head_mode,
+                            regression_downsample_factor=args.regression_downsample_factor)
+
     else:
         model = TwoHeadUnet(classes=args.classes,
                             in_channels=3,
@@ -601,6 +615,7 @@ if __name__ == '__main__':
             val_percent=args.val / 100,
             amp=args.amp,
             use_depth=args.use_depth,
+            only_depth=args.only_depth,
             use_mono_depth = args.use_mono_depth,
             reg_loss_weight=args.reg_loss_weight,
             head_mode = head_mode,
@@ -623,6 +638,7 @@ if __name__ == '__main__':
             val_percent=args.val / 100,
             amp=args.amp,
             use_depth=args.use_depth,
+            only_depth=args.only_depth,
             use_mono_depth = args.use_mono_depth,
             reg_loss_weight=args.reg_loss_weight,
             head_mode = head_mode,

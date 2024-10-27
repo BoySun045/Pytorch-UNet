@@ -8,7 +8,8 @@ from utils.df_loss import df_in_neighbor_loss, l1_loss_fn, denormalize_df, mae_l
 from utils.utils import downsample_torch_mask
 
 @torch.inference_mode()
-def evaluate(net, dataloader, device, amp, use_depth=False, 
+def evaluate(net, dataloader, device, amp, use_depth=False,
+             only_depth=False, 
              use_mono_depth=False, head_mode="segmentation",
              reg_ds_factor=1.0):
     net.eval()
@@ -32,8 +33,10 @@ def evaluate(net, dataloader, device, amp, use_depth=False,
             df = batch['df']
             label_mask = batch['label_mask']
 
-            if use_depth:    
+            if use_depth and not only_depth:
                 image = torch.cat((image, depth), dim=1)
+            if only_depth:
+                image = depth
 
             image = image.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
             mask_true = mask_true.to(device=device, dtype=torch.float32)

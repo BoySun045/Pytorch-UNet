@@ -117,7 +117,7 @@ def create_pred_vis_overlay(line_map, img, scale, non_interactive=False):
     vis_img = cv2.cvtColor(vis_img, cv2.COLOR_BGR2RGB)
 
     # Overlay heatmap on the original image
-    overlay_img = cv2.addWeighted(vis_img, 0.4, heatmap, 0.6, 0)
+    overlay_img = cv2.addWeighted(vis_img, 0.6, heatmap, 0.4, 0)
     overlay_img = cv2.cvtColor(overlay_img, cv2.COLOR_RGB2BGR)
 
     # Use matplotlib to create the colorbar and combine it with the image
