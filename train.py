@@ -449,7 +449,7 @@ def train_model(
 
                 # Evaluation round
                 # division_step = (n_train // (10 * batch_size))
-                division_step = 200
+                division_step = 10
                 if division_step > 0 and global_step % division_step == 0:
                     histograms = {}
                     for tag, value in model.named_parameters():
@@ -573,6 +573,7 @@ if __name__ == '__main__':
     # n_channels=4 for RGB-D images
     # n_classes is the number of probabilities you want to get per pixel
     if args.use_depth and not args.only_depth:
+        print("Using RGB-D images")
         model = TwoHeadUnet(classes=args.classes,
                             in_channels=4,
                             head_config = head_mode,
@@ -584,7 +585,7 @@ if __name__ == '__main__':
                             head_config = head_mode,
                             regression_downsample_factor=args.regression_downsample_factor)
 
-    else:
+    if not args.use_depth:
         model = TwoHeadUnet(classes=args.classes,
                             in_channels=3,
                             head_config = head_mode,
