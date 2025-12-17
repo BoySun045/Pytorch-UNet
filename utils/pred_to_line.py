@@ -31,8 +31,6 @@ def df_wf_to_linemap(df, wf,
     wf_pred = wf_pred.squeeze().cpu().numpy()
     linemap = np.zeros_like(wf_pred)
     linemap[bin_mask > 0] = wf_pred[bin_mask > 0]
-    print("linemap max: ", linemap.max())
-    print("linemap min: ", linemap.min())
 
     return linemap
 
@@ -48,9 +46,6 @@ def df_cls_to_line_weight(df, cls_mask,
     cls_mask = cls_mask.argmax(dim=1, keepdim=False)
     cls_mask = cls_mask.squeeze().cpu().numpy()
     reverse_mask = reverse_label_mask(cls_mask, bin_edges)
-    print("reverse mask shape: ", reverse_mask.shape)
-    print("reverse mask max: ", reverse_mask.max())
-    print("reverse mask min: ", reverse_mask.min())
     weight = np.zeros_like(reverse_mask)
     weight[bin_mask > 0] = reverse_mask[bin_mask > 0]
 

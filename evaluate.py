@@ -68,12 +68,8 @@ def evaluate(net, dataloader, device, amp, use_depth=False,
             
             elif head_mode == "df_wf":
                 df_pred, mask_pred = net(image)
-                # print("df pred")
                 df_pred = denormalize_df(df_pred, df_neighborhood=10)
-                # print("df_pred shape", df_pred.shape)
-                # print("true df shape", ds_true_df.shape)
                 df_loss += loss_fn_df(df_pred.float().squeeze(1), ds_true_df)
-                # print("df loss, ", df_loss)
                 # mask_true_log = log_transform(mask_true)
                 reg_loss += loss_fn_rg(mask_pred.squeeze(), mask_true.float())
 

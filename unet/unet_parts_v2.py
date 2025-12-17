@@ -180,7 +180,6 @@ class RegressionHead(nn.Sequential):
         activation_3 = nn.ReLU()
         
         # super().__init__(conv2d_1, activation_1, batch_norm_1, conv2d_2, activation_2, batch_norm_2, conv2d_3, downsample, activation_3)
-
         super().__init__(conv2d_1, activation_1, conv2d_2, activation_2, conv2d_3, activation_3)
 
 class DfRegressionHead(nn.Sequential):

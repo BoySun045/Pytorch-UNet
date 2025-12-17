@@ -1,6 +1,5 @@
 import numpy as np
 import cv2  # OpenCV for image processing
-from matplotlib import pyplot as plt
 
 def compute_gradients(depth_image):
     """

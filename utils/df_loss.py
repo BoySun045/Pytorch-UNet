@@ -17,14 +17,10 @@ def df_in_neighbor_loss(input, target, df_neighborhood=10):
     loss = 0
     # Retrieve the mask of valid pixels
     valid_mask = (target < df_neighborhood).float()
-    print("valid_mask shape: ", valid_mask.shape)
     valid_norm = valid_mask.sum()
-    print("valid_norm: ", valid_norm)
     valid_norm[valid_norm == 0] = 1
 
-
     df_loss = l1_loss_fn(input, target)
-    print("df_loss shape: ", df_loss.shape)
     df_loss /= df_neighborhood
 
     df_loss = (df_loss * valid_mask).sum() / valid_norm
@@ -42,10 +38,6 @@ def denormalize_df(df_norm, df_neighborhood):
     
 def df_normalized_loss_in_neighbor(input, target, df_neighborhood=10):
     # use the normalization loss from https://github.com/cvg/DeepLSD/blob/19eafc71d0c8de868f1b2b1f389efc265e07cda1/deeplsd/models/deeplsd.py#L81
-    print("df_normalized_loss_in_neighbor")
-    print("min max target: ", target.min(), target.max())
-    print("min max input: ", input.min(), input.max())
-
     # first, compute the loss
     df_loss= l1_loss_fn(input, normalize_df(target, df_neighborhood))
 
@@ -53,9 +45,6 @@ def df_normalized_loss_in_neighbor(input, target, df_neighborhood=10):
         # Retrieve the mask of valid pixels
     valid_mask = (target < df_neighborhood).float()
     valid_norm = valid_mask.sum()
-    print("valid mask shape ", valid_mask.shape)
-    print("num of valid pixels: ", valid_norm)
-
     df_loss = (df_loss * valid_mask).sum() / valid_norm + 1e-6
 
     return df_loss
@@ -93,9 +82,6 @@ def weighted_mse_loss(input, target, binary_mask_, increase_factor=1.0, avg_usin
 
     # check if the number of 0 values and 1 values in the binary mask sum up to the total number of pixels
     assert binary_mask.sum() + (binary_mask == 0).sum() == binary_mask.numel()
-    # print("number of 1 values in the binary mask: ", binary_mask.sum())
-    # print("number of 0 values in the binary mask: ", (binary_mask == 0).sum())
-    
     # Calculate squared error
     squared_error = (input - target) ** 2
 
@@ -112,5 +98,4 @@ def weighted_mse_loss(input, target, binary_mask_, increase_factor=1.0, avg_usin
         # use all pixels to calculate the average
         loss = weighted_squared_error.sum() / binary_mask.numel()
 
-    # print("loss: ", loss)
     return loss

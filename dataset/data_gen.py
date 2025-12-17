@@ -3,7 +3,6 @@ from hm3d_gt import *
 import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
-import torch
 from scipy.ndimage import distance_transform_edt
 from os.path import splitext
 import os

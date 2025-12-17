@@ -30,11 +30,9 @@ def predict_img(net,
     img = img.unsqueeze(0)
     img = img.to(device=device, dtype=torch.float32)
 
-    # print("img size: ", img.size())
     depth = torch.from_numpy(BasicDataset.preprocess(depth_img, scale_factor, is_mask=False, is_depth=True))
     depth = depth.unsqueeze(0)
     depth = depth.to(device=device, dtype=torch.float32)
-    # print("depth size: ", depth.size())
     
     # do a center crop to both image
     center_crop = transforms.CenterCrop((img_size[0], img_size[1]))

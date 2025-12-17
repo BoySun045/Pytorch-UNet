@@ -1,13 +1,8 @@
 import argparse
 import logging
-import os
-import random
-import sys
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision.transforms as transforms
-import torchvision.transforms.functional as TF
 from pathlib import Path
 from torch import optim
 from torch.utils.data import DataLoader, random_split
@@ -18,32 +13,24 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from evaluate import evaluate
-from unet import UNet, UnetResnet, TwoHeadUnet
+from unet import TwoHeadUnet
 from utils.data_loading import BasicDataset, CarvanaDataset
 from utils.dice_score import dice_loss, weighted_mask_cross_entropy_loss
-from utils.regression_loss import mse_loss, weighted_mse_loss, masked_f1_loss, weighted_huber_loss, reverse_log_transform
-from utils.df_loss import df_in_neighbor_loss, df_normalized_loss_in_neighbor, l1_loss_fn, denormalize_df
+from utils.regression_loss import masked_f1_loss, reverse_log_transform
+from utils.df_loss import df_normalized_loss_in_neighbor, denormalize_df
 from utils.utils import downsample_torch_mask
 from torchvision.utils import save_image
 import datetime 
 
 
-dir_path = Path("/media/boysun/Extreme Pro/Actmap_v2_mini")
-# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3")  # actmap_v3 is the one after data balancing cleaning
-# dir_path = Path("/cluster/project/cvg/boysun/Actmap_v2_mini")
-# dir_path = Path("/cluster/project/cvg/boysun/one_image_dataset_3")
-# dir_path = Path("/mnt/boysunSSD//one_image_dataset_3")
+dir_path = Path("/home/") 
 dir_img = Path(dir_path / 'image/')
 dir_mask = Path(dir_path / 'weighted_mask/')
 dir_checkpoint = Path(dir_path / 'checkpoints' / datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
-dir_debug = Path(dir_path / 'debug/')
 dir_depth = Path(dir_path / 'depth/')
-# multi_class_weights_path = Path("/cluster/project/cvg/boysun/Actmap_v3/debug/class_counts_exp_20_bin_30_max_8.5.npy")
-# multi_class_weights_path = Path("/cluster/project/cvg/boysun/Actmap_v3/debug/class_counts_uni_11.npy")
+multi_class_weights_path = Path("./dataset/class_counts_uni_11.npy")
 
-multi_class_weights_path = Path("/media/boysun/Extreme Pro/Actmap_v2_mini/debug/class_counts_uni_11.npy")
-
-# make debug directory
+dir_debug = Path(dir_path / 'debug/')
 dir_debug.mkdir(parents=True, exist_ok=True)
 
 def save_debug_images(batch, epoch, batch_idx, prefix='train', num_images=5):
@@ -153,8 +140,6 @@ def log_images(experiment, optimizer,
                global_step, epoch, histograms, use_depth):
 
     # Calculate the error map
-    
-    # error_map = torch.abs(true_masks - wandb_mask_pred).cpu().detach()
     error_map = torch.abs(ds_true_df - wandb_df_pred).cpu().detach()
     
     combined_image = plot_images(wandb_rgb, wandb_depth, 
@@ -176,7 +161,6 @@ def log_images(experiment, optimizer,
         })
     except Exception as e:
         print(f"Failed to log to Weights and Biases: {e}")
-
 
 
         
@@ -278,7 +262,6 @@ def train_model(
     # 4. Set up the optimizer, the loss, the learning rate scheduler and the loss scaling for AMP
     # optimizer = optim.RMSprop(model.parameters(),
     #                           lr=learning_rate, weight_decay=weight_decay, momentum=momentum)
-    #use adam optimizer
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
     if lr_decay:
@@ -300,10 +283,6 @@ def train_model(
         loss_fn_cl = weighted_mask_cross_entropy_loss(ignore_idx=0, 
                                                       weights=np.load(multi_class_weights_path),
                                                       num_classes=model.n_classes)
-        # loss_fn_cl = weighted_mask_cross_entropy_loss(ignore_idx=0, 
-        #                                         weights=None,
-        #                                         num_classes=model.n_classes)
-                
     else:
         loss_fn_cl = nn.BCEWithLogitsLoss()
 
@@ -381,7 +360,6 @@ def train_model(
                         masks_pred = model(images)
                         # reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float(), true_binary_masks.float(), 
                         #                       increase_factor=8.0, avg_using_binary_mask=False)
-
                         # wf loss
                         reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float())
                         loss = reg_loss
@@ -398,7 +376,6 @@ def train_model(
 
                     elif head_mode == "df_wf":
                         df_pred, masks_pred = model(images)
-                        print("true mask min max", true_masks.min(), true_masks.max())
                         reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float(), df = ds_true_df)
                         df_loss = loss_fn_df(df_pred.squeeze(1), ds_true_df)
                         loss = reg_loss_weight*reg_loss + df_loss

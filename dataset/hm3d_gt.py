@@ -50,13 +50,6 @@ def min_max_scale(y, min_val, max_val):
 def reverse_min_max_scale(y, min_val, max_val):
     return y * (max_val - min_val) + min_val
 
-# def label_wf(input, num_bins=30, end=8.5, start=0, exp_max=20):
-#     exp_bins = np.geomspace(1, exp_max, num_bins)[::-1]
-#     bin_edges = end - (exp_bins - exp_bins.min()) / (exp_bins.max() - exp_bins.min()) * (end - start)
-#     # Subtract 1 to make bins 0-indexed, since we do clip min to be 0, there will be no -1 bin
-#     label_mask = np.digitize(input, bin_edges) - 1
-#     return label_mask
-
 def label_wf(input):
 
     # uni_11
@@ -175,12 +168,6 @@ def extend_weight_mask(weight_mask, kernel_size=9):
     
     return extended_mask
 
-# def compute_wf(weight_mask, distance_field, line_neighborhood=10):
-#     # for weight field, it takes the value from weigh_mask, if it's coresponing distance field value is less than line_neighborhood
-    
-#     weight_mask = extend_weight_mask(weight_mask)
-#     weight_mask[distance_field > line_neighborhood] = 0
-#     return weight_mask
 
 def compute_wf(weight_mask, df, line_neighborhood=10):
     # for weight field, it takes the value from weigh_mask, if it's coresponing distance field value is less than line_neighborhood

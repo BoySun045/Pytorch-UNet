@@ -46,18 +46,13 @@ def weighted_mask_cross_entropy_loss(ignore_idx: int = 0, weights = None, num_cl
     if weights is None:
         norm_weights = np.ones(num_classes)
     else:  
-        print(f"weights is {weights}")
-
         # take the number of classes into account
         weights[num_classes -1 ] = np.sum(weights[num_classes - 1:])
         weights = weights[:num_classes]
-        print(f"weights after num_classes is {weights}")
         
         # normalize the weights using the inverse of the weights input
         weights = 1 / (weights + 1)
-        print(f"weights after inverse is {weights}")
         norm_weights = weights / weights.sum()
-        print(f"norm_weights is {norm_weights}")
 
     
     norm_weights = torch.tensor(norm_weights, dtype=torch.float32).cuda()

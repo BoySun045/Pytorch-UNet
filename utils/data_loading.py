@@ -2,15 +2,11 @@ import logging
 import numpy as np
 import torch
 from PIL import Image
-from functools import lru_cache
-from functools import partial
-from itertools import repeat
 from multiprocessing import Pool
 from os import listdir
 from os.path import splitext, isfile, join
 from pathlib import Path
 from torch.utils.data import Dataset
-from tqdm import tqdm
 from utils.data_augmentation import get_transforms, get_static_transforms, get_appearance_transforms
 from dataset.hm3d_gt import load_image, log_transform_mask, min_max_scale, compute_df, compute_wf, label_wf
 import cv2
@@ -72,11 +68,6 @@ class BasicDataset(Dataset):
             mask_weight_global_max = 4000.0
             mask_weight_global_min = 0
             
-            # local min_max
-            # mask_weight_global_max = mask.max()
-            # mask_weight_global_min = mask[mask>0].min()
-            #print("weighted mask max min", mask_weight_global_max, mask_weight_global_min)
-
             # handling nan sitation:
             if abs(mask_weight_global_max-mask_weight_global_min) < 1e-3 or mask_weight_global_max < mask_weight_global_min:
                 mask = np.ones_like(mask)
@@ -86,15 +77,7 @@ class BasicDataset(Dataset):
             if log_transform:
                 mask = np.clip(mask, mask_weight_global_min, mask_weight_global_max)
                 mask_log = log_transform_mask(mask)   # log transform move to the loss calculation part
-                # mask_log_max = np.log1p(mask_weight_global_max)
-                # mask_log_min = np.log1p(mask_weight_global_min)
-                # mask_log = min_max_scale(mask_log, mask_log_min, mask_log_max)
-                # print("dataloader mask min max", mask.min(), mask.max())
                 mask = mask_log
-
-                # mask = np.clip(mask, 0, 1)
-                # mask = mask_log
-                # print("mask min max: ", mask.min(), mask.max())
             
             else:
                 mask = np.clip(mask, mask_weight_global_min, mask_weight_global_max)
@@ -181,7 +164,6 @@ class BasicDataset(Dataset):
     def __getitem__(self, idx):
         name = self.ids[idx]
         mask_file = list(self.mask_dir.glob(name + self.mask_suffix + '.*'))
-        # print(mask_file)
         img_file = list(self.images_dir.glob(name + '.*'))
 
         assert len(img_file) == 1, f'Either no image or multiple images found for the ID {name}: {img_file}'
@@ -189,7 +171,6 @@ class BasicDataset(Dataset):
         mask = load_image(mask_file[0])
         img = load_image(img_file[0])
 
-        # if self.depth_dir is not None:  # TODO: fix this, we always need depth image
         depth_file = list(self.depth_dir.glob(name + '.*'))
         assert len(depth_file) == 1, f'Either no depth image or multiple depth images found for the ID {name}: {depth_file}'
         depth = load_image(depth_file[0], load_depth=True)
@@ -207,7 +188,6 @@ class BasicDataset(Dataset):
         mask, binary_mask = self.preprocess(mask, self.scale, is_mask=True, is_depth=False, log_transform=self.log_transform)
         
         # get the weight field
-        # print("mask min max before get_wf", mask.min(), mask.max())
         mask = self.get_wf(mask, df, 1.0, 10.0) # scale does not need to be changed here since previous preprocess already did resize
 
         # get labeled mask
@@ -220,7 +200,6 @@ class BasicDataset(Dataset):
 
         # set class larger than the maximum class to the maximum class ( -1 since the class starts from 0)
         label_mask[label_mask > self.seg_num_classes - 1 ] = self.seg_num_classes -1
-        # print("label mask unique", np.unique(label_mask))
 
         # data augmentation
         if self.transforms:
