@@ -45,7 +45,7 @@ def reverse_log_transform_mask(y):
     return np.expm1(y)  # expm1(x) = exp(x) - 1
 
 def min_max_scale(y, min_val, max_val):
-    return (y - min_val) / (max_val - min_val)
+    return (y - min_val) / (max_val - min_val + 1e-8)
 
 def reverse_min_max_scale(y, min_val, max_val):
     return y * (max_val - min_val) + min_val

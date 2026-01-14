@@ -33,7 +33,7 @@ def evaluate(net, dataloader, device, amp, use_depth=False,
             df = batch['df']
             label_mask = batch['label_mask']
 
-            if use_depth and not only_depth:
+            if (use_depth or use_mono_depth) and not only_depth:
                 image = torch.cat((image, depth), dim=1)
             if only_depth:
                 image = depth
@@ -81,8 +81,8 @@ def evaluate(net, dataloader, device, amp, use_depth=False,
                 mask_true = F.one_hot(label_mask, net.n_classes).permute(0, 3, 1, 2).float()
                 mask_pred = F.one_hot(masks_pred.argmax(dim=1), net.n_classes).permute(0, 3, 1, 2).float()
                 # compute the Dice score, ignoring nothing
-                valid_mask = ds_true_df < 5
-                # valid_mask = label_mask != 0
+                # valid_mask = ds_true_df < 5
+                valid_mask = label_mask != 0
                 valid_mask = valid_mask.unsqueeze(1).repeat(1, net.n_classes, 1, 1)
                 dice_score += multiclass_dice_coeff(mask_pred, mask_true, valid_mask, reduce_batch_first=True)
                 print(f"dice_score is {dice_score}")

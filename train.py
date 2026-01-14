@@ -23,15 +23,7 @@ from torchvision.utils import save_image
 import datetime 
 
 
-dir_path = Path("/home/") 
-dir_img = Path(dir_path / 'image/')
-dir_mask = Path(dir_path / 'weighted_mask/')
-dir_checkpoint = Path(dir_path / 'checkpoints' / datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
-dir_depth = Path(dir_path / 'depth/')
-multi_class_weights_path = Path("./dataset/class_counts_uni_11.npy")
 
-dir_debug = Path(dir_path / 'debug/')
-dir_debug.mkdir(parents=True, exist_ok=True)
 
 def save_debug_images(batch, epoch, batch_idx, prefix='train', num_images=5):
     """
@@ -63,7 +55,7 @@ def plot_images(wandb_rgb, wandb_depth,
                  true_masks, label_mask,
                  wandb_mask_pred, binary_mask, 
                  wandb_df_pred, ds_true_df,
-                 error_map, use_depth):
+                 error_map, use_depth, use_mono_depth):
     num_cols = 5 
     fig, axes = plt.subplots(2, num_cols, figsize=(20, 8))
     
@@ -75,7 +67,13 @@ def plot_images(wandb_rgb, wandb_depth,
     idx_offset = 1
     # Depth image (if applicable)
     axes[0, 1].imshow(wandb_depth[0].cpu().detach().numpy(), cmap='gray')
-    title = 'Depth Image ' if use_depth else 'Depth Image(Not Used)'
+    if use_depth:
+        title = 'Depth Image ' 
+    elif use_mono_depth:
+        title = 'Mono Depth Image '
+    else:
+        title = 'Depth Image(Not Used)'
+        
     axes[0, 1].set_title(title)
     axes[0, 1].axis('on')
     idx_offset += 1
@@ -137,7 +135,7 @@ def log_images(experiment, optimizer,
                true_masks, label_mask, 
                wandb_mask_pred, binary_mask,
                wandb_df_pred, ds_true_df, 
-               global_step, epoch, histograms, use_depth):
+               global_step, epoch, histograms, use_depth, use_mono_depth):
 
     # Calculate the error map
     error_map = torch.abs(ds_true_df - wandb_df_pred).cpu().detach()
@@ -146,7 +144,7 @@ def log_images(experiment, optimizer,
                                  true_masks, label_mask,
                                    wandb_mask_pred, binary_mask,
                                    wandb_df_pred, ds_true_df, 
-                                   error_map, use_depth)
+                                   error_map, use_depth, use_mono_depth)
     
     try:
         experiment.log({
@@ -219,12 +217,12 @@ def train_model(
     print(f"Train size: {n_train}, Validation size: {n_val}")
 
     # 4. Create data loaders
-    loader_args = dict(batch_size=batch_size, num_workers=16, pin_memory=True)
+    loader_args = dict(batch_size=batch_size, num_workers=1, pin_memory=True)
     train_loader = DataLoader(train_set, shuffle=True, **loader_args)
-    val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
+    val_loader = DataLoader(val_set, shuffle=False, drop_last=False, **loader_args)
 
     # (Initialize logging)
-    experiment = wandb.init(project='U-Net-resnet-v3', resume='allow', anonymous='must')
+    experiment = wandb.init(entity="ftnet-wm", project='U-Net-resnet-v3', resume='allow', anonymous='must')
     experiment.config.update(
         dict(epochs=epochs, 
              batch_size=batch_size, 
@@ -317,7 +315,7 @@ def train_model(
                 depth = depth.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
 
                 if not only_depth:
-                    images = torch.cat([images, depth], dim=1) if use_depth else images
+                    images = torch.cat([images, depth], dim=1) if (use_depth or use_mono_depth) else images
                 else:
                     images = depth
 
@@ -402,8 +400,6 @@ def train_model(
                         loss = reg_loss_weight*df_loss + class_loss
                         reg_loss = None
                         
-                        loss = reg_loss_weight*df_loss + class_loss
-                        reg_loss = None
 
                 optimizer.zero_grad(set_to_none=True)
                 grad_scaler.scale(loss).backward()
@@ -503,13 +499,18 @@ def train_model(
                                  ds_true_masks, label_mask,
                                  wandb_mask_pred, binary_mask,
                                  wandb_df_pred, ds_true_df,
-                                 global_step, epoch, histograms, use_depth)
+                                 global_step, epoch, histograms, use_depth, use_mono_depth)
 
 
         if save_checkpoint and epoch % 2 == 0:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
-            use_depth_str = 'depth' if use_depth else 'no_depth'
+            if use_depth:
+                use_depth_str = 'depth' 
+            elif use_mono_depth:
+                use_depth_str = 'mono_depth' 
+            else:
+                use_depth_str = 'no_depth'
             reg_weights = str(reg_loss_weight)
             torch.save(state_dict, str(dir_checkpoint / f'CP_epoch{epoch}_{use_depth_str}_{only_depth}_{reg_weights}.pth'))
             logging.info(f'Checkpoint {epoch} saved!')
@@ -534,35 +535,64 @@ def get_args():
     parser.add_argument('--use_mono_depth','-umd', action='store_true', default=False, help='Use mono depth image')
     parser.add_argument('--head_mode', type=str, default='segmentation', help='both or segmentation or regression')
     parser.add_argument('--regression_downsample_factor','-rdf', type=float, default=1.0, help='Downsample factor for regression head')
+    parser.add_argument('--dataset_name', type=str, default='dummy', help='Name of the dataset')
     return parser.parse_args()
 
 
 if __name__ == '__main__':
     args = get_args()
+    # assert use_depth and use_mono_depth cannot be set at the same time
+    if args.use_depth and args.use_mono_depth:
+        raise ValueError("Cannot set both use_depth and use_mono_depth to True at the same time.")
+    
+    if args.dataset_name == 'dummy':
+        raise ValueError("Please set the dataset_name argument to a valid name.")
+    elif args.dataset_name == 'gen3c_single':
+        dir_path = Path("/cluster/project/cvg/students/shangwu/Pytorch-UNet/Actmap_single_1000/") 
+    elif args.dataset_name == 'gen3c_multi':
+        dir_path = Path("/cluster/project/cvg/students/shangwu/Pytorch-UNet/Actmap_multi_1000/") 
+    elif args.dataset_name == 'gt':
+        dir_path = Path("/cluster/project/cvg/students/shangwu/Pytorch-UNet/Actmap_gt_1000/") 
+    else:
+        raise ValueError("Unknown dataset_name. Please choose from 'gen3c_single', 'gen3c_multi', or 'gt'.")
+    # dir_path = Path("/cluster/project/cvg/students/shangwu/Pytorch-UNet/Actmap_v3/") 
+    # dir_path = Path("/cluster/project/cvg/students/shangwu/Pytorch-UNet/example_data")
+    # dir_path = Path("/cluster/project/cvg/students/shangwu/Pytorch-UNet/Actmap_gt_1000/") 
+    # dir_path = Path("/cluster/project/cvg/students/shangwu/Pytorch-UNet/Actmap_RGBD_1000/") 
 
+    dir_img = Path(dir_path / 'image/')
+    dir_mask = Path(dir_path / 'weighted_mask/')
+    dir_checkpoint = Path(dir_path / 'checkpoints' / datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+    dir_depth = Path(dir_path / 'depth/')
+    multi_class_weights_path = Path("./dataset/class_counts_uni_11.npy")
+
+    dir_debug = Path(dir_path / 'debug/')
+    dir_debug.mkdir(parents=True, exist_ok=True)
+        
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info(f'Using device {device}')
 
     head_mode = args.head_mode
+    
     # Change here to adapt to your data
     # n_channels=3 for RGB images
     # n_channels=4 for RGB-D images
     # n_classes is the number of probabilities you want to get per pixel
-    if args.use_depth and not args.only_depth:
+    if (args.use_depth or args.use_mono_depth) and not args.only_depth:
         print("Using RGB-D images")
         model = TwoHeadUnet(classes=args.classes,
                             in_channels=4,
                             head_config = head_mode,
                             regression_downsample_factor=args.regression_downsample_factor)
 
-    if args.use_depth and args.only_depth:
+    if (args.use_depth or args.use_mono_depth) and args.only_depth:
         model = TwoHeadUnet(classes=args.classes,
                             in_channels=1,
                             head_config = head_mode,
                             regression_downsample_factor=args.regression_downsample_factor)
 
-    if not args.use_depth:
+    if not (args.use_depth or args.use_mono_depth):
         model = TwoHeadUnet(classes=args.classes,
                             in_channels=3,
                             head_config = head_mode,

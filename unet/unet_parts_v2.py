@@ -210,7 +210,7 @@ class DecoderBlock(nn.Module):
         in_channels,
         skip_channels,
         out_channels,
-        use_batchnorm=True,
+        use_norm=True,
         attention_type=None,
     ):
         super().__init__()
@@ -219,7 +219,7 @@ class DecoderBlock(nn.Module):
             out_channels,
             kernel_size=3,
             padding=1,
-            use_batchnorm=use_batchnorm,
+            use_norm=use_norm,
         )
         self.attention1 = md.Attention(attention_type, in_channels=in_channels + skip_channels)
         self.conv2 = md.Conv2dReLU(
@@ -227,7 +227,7 @@ class DecoderBlock(nn.Module):
             out_channels,
             kernel_size=3,
             padding=1,
-            use_batchnorm=use_batchnorm,
+            use_norm=use_norm,
         )
         self.attention2 = md.Attention(attention_type, in_channels=out_channels)
 
@@ -243,20 +243,20 @@ class DecoderBlock(nn.Module):
 
 
 class CenterBlock(nn.Sequential):
-    def __init__(self, in_channels, out_channels, use_batchnorm=True):
+    def __init__(self, in_channels, out_channels, use_norm=True):
         conv1 = md.Conv2dReLU(
             in_channels,
             out_channels,
             kernel_size=3,
             padding=1,
-            use_batchnorm=use_batchnorm,
+            use_norm=use_norm,
         )
         conv2 = md.Conv2dReLU(
             out_channels,
             out_channels,
             kernel_size=3,
             padding=1,
-            use_batchnorm=use_batchnorm,
+            use_norm=use_norm,
         )
         super().__init__(conv1, conv2)
 
@@ -267,7 +267,7 @@ class UnetDecoder(nn.Module):
         encoder_channels,
         decoder_channels,
         n_blocks=5,
-        use_batchnorm=True,
+        use_norm=True,
         attention_type=None,
         center=False,
     ):
@@ -292,12 +292,12 @@ class UnetDecoder(nn.Module):
         out_channels = decoder_channels
 
         if center:
-            self.center = CenterBlock(head_channels, head_channels, use_batchnorm=use_batchnorm)
+            self.center = CenterBlock(head_channels, head_channels, use_norm=use_norm)
         else:
             self.center = nn.Identity()
 
         # combine decoder keyword arguments
-        kwargs = dict(use_batchnorm=use_batchnorm, attention_type=attention_type)
+        kwargs = dict(use_norm=use_norm, attention_type=attention_type)
         blocks = [
             DecoderBlock(in_ch, skip_ch, out_ch, **kwargs)
             for in_ch, skip_ch, out_ch in zip(in_channels, skip_channels, out_channels)
