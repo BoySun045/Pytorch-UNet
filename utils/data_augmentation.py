@@ -4,9 +4,9 @@ from albumentations.pytorch import ToTensorV2
 
 def get_transforms():
     transforms = A.Compose([
-        A.RandomCrop(width=224, height=224),
         A.HorizontalFlip(p=0.5),
-        A.ShiftScaleRotate(shift_limit=0.0, scale_limit=0.0, rotate_limit=45, p=0.5),
+        A.Rotate(limit=30, p=0.5, crop_border=True),  # crop_border=True crops to largest valid rectangle
+        A.RandomCrop(width=224, height=224),
         ToTensorV2()
     ], additional_targets={'mask': 'mask', 'binary_mask': 'mask', 'label_mask': 'mask',
                            'depth': 'image', 'mono_depth': 'image', 'df': 'mask'})

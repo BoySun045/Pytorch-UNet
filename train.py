@@ -23,11 +23,11 @@ from torchvision.utils import save_image
 import datetime 
 
 
-dir_path = Path("/home/") 
+dir_path = Path("/mnt/hdd/Actmap_v3/") 
 dir_img = Path(dir_path / 'image/')
 dir_mask = Path(dir_path / 'weighted_mask/')
 dir_checkpoint = Path(dir_path / 'checkpoints' / datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
-dir_depth = Path(dir_path / 'depth/')
+dir_depth = Path(dir_path / 'mono_depth/')
 multi_class_weights_path = Path("./dataset/class_counts_uni_11.npy")
 
 dir_debug = Path(dir_path / 'debug/')
@@ -190,7 +190,7 @@ def train_model(
         reg_ds_factor = 1.0
 ):
     # 1. Create dataset
-    data_augmentation = True
+    data_augmentation = False
     log_transform = log_transform
 
     # Always load depth, but only use it if set 
@@ -219,7 +219,7 @@ def train_model(
     print(f"Train size: {n_train}, Validation size: {n_val}")
 
     # 4. Create data loaders
-    loader_args = dict(batch_size=batch_size, num_workers=16, pin_memory=True)
+    loader_args = dict(batch_size=batch_size, num_workers=16, pin_memory=True)  # num_workers=0 for pdb debugging
     train_loader = DataLoader(train_set, shuffle=True, **loader_args)
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
@@ -426,7 +426,7 @@ def train_model(
 
                 # Evaluation round
                 # division_step = (n_train // (10 * batch_size))
-                division_step = 10
+                division_step = 200
                 if division_step > 0 and global_step % division_step == 0:
                     histograms = {}
                     for tag, value in model.named_parameters():

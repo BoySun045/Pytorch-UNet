@@ -28,11 +28,13 @@ def load_image(filename, load_depth=False):
     elif ext in ['.pt', '.pth']:
         return Image.fromarray(torch.load(filename).numpy())
     elif ext in ['.png', '.jpg'] and load_depth:
-        # print("Loading depth image: ", filename)
-        # print("filename type: ", type(filename) )
-        #convert filename to string
+        # Load depth preserving original bit depth (16-bit or 8-bit)
         filename = str(filename)
-        return cv2.imread(filename, cv2.IMREAD_GRAYSCALE)
+        depth = cv2.imread(filename, cv2.IMREAD_UNCHANGED)
+        # If loaded as color (3 channels), take first channel
+        if depth.ndim == 3:
+            depth = depth[:, :, 0]
+        return depth
     elif ext in ['.png', '.jpg'] and not load_depth:
         return Image.open(filename)
     

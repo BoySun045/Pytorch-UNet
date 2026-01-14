@@ -85,7 +85,7 @@ def evaluate(net, dataloader, device, amp, use_depth=False,
                 # valid_mask = label_mask != 0
                 valid_mask = valid_mask.unsqueeze(1).repeat(1, net.n_classes, 1, 1)
                 dice_score += multiclass_dice_coeff(mask_pred, mask_true, valid_mask, reduce_batch_first=True)
-                print(f"dice_score is {dice_score}")
+                # print(f"dice_score is {dice_score}")
 
     net.train()
     avg_dice_score = dice_score / num_val_batches if dice_score != 0 else 0
