@@ -12,7 +12,7 @@ from dataset.hm3d_gt import load_image, log_transform_mask, min_max_scale, compu
 import cv2
 
 class BasicDataset(Dataset):
-    def __init__(self, images_dir: str, mask_dir: str, depth_dir: str = None,
+    def __init__(self, images_dir: str, mask_dir: str, depth_dir: str = None, mono_depth_dir: str = None,
                   scale: float = 1.0, 
                   gen_mono_depth: bool = False,
                   seg_num_classes: int = 1,
@@ -46,11 +46,10 @@ class BasicDataset(Dataset):
 
         # log loss transform
         self.log_transform = log_transform
-
         # set mono depth path
         self.mono_depth = gen_mono_depth
-            # mono depth dir is the same path as depth_dir but with name mono_depth instead of depth
-        self.mono_depth_dir = self.depth_dir.parent / 'mono_depth' if self.mono_depth else None
+        # mono depth dir 
+        self.mono_depth_dir = mono_depth_dir
 
     def __len__(self):
         return len(self.ids)
@@ -110,15 +109,6 @@ class BasicDataset(Dataset):
                     img = img[0:1, ...]
 
                 # normalize depth relative to min and max value in the image 
-                # img_min = img.min()
-                # img_max = img.max()
-                # img = (img - img_min) / (img_max - img_min)
-
-                # or, normalize depth with a fixed maximum depth value
-                # import pdb; pdb.set_trace()
-                # img_min = img.min()
-                # img_max = img.max()
-                # for true depth
                 # HM3D_DEPTH_FACTOR = 1000.0
                 METRIC_DEPTH_MAX = 20.0  # adjust based on your scene
                 # img = img / HM3D_DEPTH_FACTOR
@@ -189,7 +179,7 @@ class BasicDataset(Dataset):
         depth_file = list(self.depth_dir.glob(name + '.*'))
         assert len(depth_file) == 1, f'Either no depth image or multiple depth images found for the ID {name}: {depth_file}'
         depth = load_image(depth_file[0], load_depth=True)
-        df = self.get_df(mask, depth, self.scale)
+        df = self.get_df(mask, depth, self.scale) # important: df is much better if it comes from original depth image instead of mono depth image
         depth = self.preprocess(depth, self.scale, is_mask=False, is_depth=True)
 
         # run mono-depth 
@@ -243,11 +233,12 @@ class BasicDataset(Dataset):
 
             if self.depth_dir is not None:
                 depth = augmented['depth']
-                df = augmented['df']
+                df = augmented['df'] 
                 df = np.transpose(df, (2, 0, 1)).squeeze() if df.ndim == 3 else df.squeeze(-1)
 
             if self.mono_depth:
                 mono_depth = augmented['mono_depth']
+                
 
             if self.img_app_transforms is not None:
                 # do appearance transform only for img

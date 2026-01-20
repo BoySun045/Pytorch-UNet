@@ -23,13 +23,13 @@ from torchvision.utils import save_image
 import datetime 
 
 
-dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3") 
+dir_path = Path("/mnt/hdd/Actmap_v3/") 
 dir_img = Path(dir_path / 'image/')
 dir_mask = Path(dir_path / 'weighted_mask/')
-dir_checkpoint = Path(dir_path / 'metric_checkpoints' / datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
-# dir_depth = Path(dir_path / 'depth/')
-dir_depth = Path("/cluster/scratch/boysun/metric3d_depth/")
-multi_class_weights_path = Path("/cluster/project/cvg/boysun/Actmap_v3/debug/class_counts_uni_11.npy")
+dir_checkpoint = Path(dir_path / 'checkpoints' / datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+dir_depth = Path(dir_path / 'depth/')
+dir_mono_depth = Path(dir_path / 'mono_depth/')
+multi_class_weights_path = Path("./dataset/class_counts_uni_11.npy")
 
 dir_debug = Path(dir_path / 'debug/')
 dir_debug.mkdir(parents=True, exist_ok=True)
@@ -195,19 +195,16 @@ def train_model(
     log_transform = log_transform
 
     # Always load depth, but only use it if set 
-    try:
-        dataset = CarvanaDataset(dir_img, dir_mask,dir_depth, 
-                                 img_scale,
-                                 gen_mono_depth = use_mono_depth,
-                                 seg_num_classes=model.n_classes,
-                                 data_augmentation=data_augmentation, log_transform=log_transform)
-        
-    except (AssertionError, RuntimeError, IndexError):
-        dataset = BasicDataset(dir_img, dir_mask, dir_depth,
-                                img_scale, 
-                                gen_mono_depth = use_mono_depth,
-                                seg_num_classes=model.n_classes,
-                                data_augmentation=data_augmentation, log_transform=log_transform)
+
+        # only process mono_depth when 1) dir mono depth exist, and 2) use_mono_depth is set
+    use_mono_depth = use_mono_depth and dir_mono_depth.exists()
+    if not use_mono_depth:
+        print("Not using mono depth for training.")
+    dataset = BasicDataset(dir_img, dir_mask, dir_depth, dir_mono_depth,
+                            img_scale, 
+                            gen_mono_depth = use_mono_depth,
+                            seg_num_classes=model.n_classes,
+                            data_augmentation=data_augmentation, log_transform=log_transform)
 
     # 2. Subset the dataset
     total_size = int(len(dataset) * dataset_portion)
@@ -305,7 +302,11 @@ def train_model(
                 true_masks, true_binary_masks = batch['mask'], batch['binary_mask']
                 true_df = batch['df']
                 images = batch['image']
-                depth = batch['depth'] if not use_mono_depth else batch['mono_depth']
+                depth = batch['depth'] 
+                
+                if use_mono_depth:
+                    mono_depth = batch['mono_depth']
+                
                 label_mask = batch['label_mask']
 
                 # assert images.shape[1] + depth.shape[1] == model.n_channels, \
@@ -317,8 +318,14 @@ def train_model(
                 images = images.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
                 depth = depth.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
 
+                if use_mono_depth:
+                    mono_depth = mono_depth.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
+
                 if not only_depth:
-                    images = torch.cat([images, depth], dim=1) if use_depth else images
+                    if use_mono_depth:
+                        images = torch.cat([images, mono_depth], dim=1) if use_depth else images
+                    else:
+                        images = torch.cat([images, depth], dim=1) if use_depth else images
                 else:
                     images = depth
 
@@ -496,8 +503,11 @@ def train_model(
 
                     # since image could be 4 channels, we need to convert it to 3 channels to get the rgb image
                     wandb_rgb = images[:, :3, :, :]
-                    wandb_depth = depth.squeeze(1)
-        
+                    if not use_mono_depth:
+                        wandb_depth = depth.squeeze(1) 
+                    else:
+                        wandb_depth = mono_depth.squeeze(1)
+
                     log_images(experiment, optimizer,
                                  val_score_cl, val_score_rg, val_score_df,
                                  wandb_rgb, wandb_depth,
@@ -511,6 +521,7 @@ def train_model(
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             state_dict = model.state_dict()
             use_depth_str = 'depth' if use_depth else 'no_depth'
+            use_depth_str += '_mono' if use_mono_depth else ''
             reg_weights = str(reg_loss_weight)
             torch.save(state_dict, str(dir_checkpoint / f'CP_epoch{epoch}_{use_depth_str}_{only_depth}_{reg_weights}.pth'))
             logging.info(f'Checkpoint {epoch} saved!')
@@ -532,7 +543,7 @@ def get_args():
     parser.add_argument('--reg_loss_weight', '-rw', type=float, default=1.0, help='Weight of regression loss')
     parser.add_argument('--use_depth','-ud', action='store_true', default=False, help='Use depth image')
     parser.add_argument('--only_depth','-od', action='store_true', default=False, help='Only use depth image')
-    parser.add_argument('--use_mono_depth','-umd', action='store_true', default=False, help='Use mono depth image')
+    parser.add_argument('--use_mono_depth','-umd', action='store_true', default=False, help='Use mono depth image as training input')
     parser.add_argument('--head_mode', type=str, default='segmentation', help='both or segmentation or regression')
     parser.add_argument('--regression_downsample_factor','-rdf', type=float, default=1.0, help='Downsample factor for regression head')
     return parser.parse_args()
