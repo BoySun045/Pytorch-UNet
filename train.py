@@ -23,12 +23,13 @@ from torchvision.utils import save_image
 import datetime 
 
 
-dir_path = Path("/mnt/hdd/Actmap_v3/") 
+dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3") 
 dir_img = Path(dir_path / 'image/')
 dir_mask = Path(dir_path / 'weighted_mask/')
-dir_checkpoint = Path(dir_path / 'checkpoints' / datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
-dir_depth = Path(dir_path / 'mono_depth/')
-multi_class_weights_path = Path("./dataset/class_counts_uni_11.npy")
+dir_checkpoint = Path(dir_path / 'metric_checkpoints' / datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+# dir_depth = Path(dir_path / 'depth/')
+dir_depth = Path("/cluster/scratch/boysun/metric3d_depth/")
+multi_class_weights_path = Path("/cluster/project/cvg/boysun/Actmap_v3/debug/class_counts_uni_11.npy")
 
 dir_debug = Path(dir_path / 'debug/')
 dir_debug.mkdir(parents=True, exist_ok=True)
@@ -190,7 +191,7 @@ def train_model(
         reg_ds_factor = 1.0
 ):
     # 1. Create dataset
-    data_augmentation = False
+    data_augmentation = True
     log_transform = log_transform
 
     # Always load depth, but only use it if set 
@@ -622,4 +623,4 @@ if __name__ == '__main__':
             head_mode = head_mode,
             weight_decay=1e-7,
             reg_ds_factor=args.regression_downsample_factor
-        )
+            )

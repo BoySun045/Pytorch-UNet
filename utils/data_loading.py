@@ -110,22 +110,25 @@ class BasicDataset(Dataset):
                     img = img[0:1, ...]
 
                 # normalize depth relative to min and max value in the image 
-                img_min = img.min()
-                img_max = img.max()
-                img = (img - img_min) / (img_max - img_min)
+                # img_min = img.min()
+                # img_max = img.max()
+                # img = (img - img_min) / (img_max - img_min)
 
                 # or, normalize depth with a fixed maximum depth value
                 # import pdb; pdb.set_trace()
                 # img_min = img.min()
                 # img_max = img.max()
                 # for true depth
-                HM3D_DEPTH_FACTOR = 1000.0
+                # HM3D_DEPTH_FACTOR = 1000.0
                 METRIC_DEPTH_MAX = 20.0  # adjust based on your scene
+                # img = img / HM3D_DEPTH_FACTOR
+                img = np.clip(img, 0, METRIC_DEPTH_MAX)
                 # for relative depth
-                HM3D_DEPTH_FACTOR = 1.0
-                METRIC_DEPTH_MAX = 255.0
+                # HM3D_DEPTH_FACTOR = 1.0
+                # METRIC_DEPTH_MAX = 255.0
                 # img = img / HM3D_DEPTH_FACTOR
                 # img = np.clip(img, 0, METRIC_DEPTH_MAX) / METRIC_DEPTH_MAX
+                img = (img - img.min()) / (img.max() - img.min() + 1e-8) 
                 return img
 
             if not is_depth:

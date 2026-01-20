@@ -20,7 +20,7 @@ from scipy.spatial import cKDTree
 
 def load_image(filename, load_depth=False):
     ext = splitext(filename)[1]
-    if ext == '.npy':
+    if ext == '.npy' and not load_depth:
         return Image.fromarray(np.load(filename))
     if ext == '.npz':
         weights = np.load(filename)['weights']
@@ -35,6 +35,8 @@ def load_image(filename, load_depth=False):
         if depth.ndim == 3:
             depth = depth[:, :, 0]
         return depth
+    elif ext == '.npy' and load_depth:
+        return np.load(filename)
     elif ext in ['.png', '.jpg'] and not load_depth:
         return Image.open(filename)
     
