@@ -121,11 +121,10 @@ def get_frontier_line_mask(binary_mask, depth_image):
     assert binary_mask.shape == depth_image.shape, "Mask and depth image must have the same shape"
 
     # handle the depth artifect
-    depth_image[depth_image < 1e-6] = 500
+    depth_image[depth_image < 1e-6] = -10000
 
     grad_x, grad_y = compute_gradients(depth_image)
-    magnitude, direction = gradient_magnitude_and_direction(grad_x, grad_y)
-    from scipy.ndimage import median_filter
+    magnitude, _ = gradient_magnitude_and_direction(grad_x, grad_y)
     # Threshold for detecting discontinuities
     threshold_max = 400  # This value might need tuning depending on the depth range
     threshold_min = 40

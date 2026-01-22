@@ -111,8 +111,9 @@ class BasicDataset(Dataset):
                 # normalize depth relative to min and max value in the image 
                 # HM3D_DEPTH_FACTOR = 1000.0
                 METRIC_DEPTH_MAX = 20.0  # adjust based on your scene
+                METRIC_DEPTH_MAX_UNI = 256 # actually for relative depth, we do not need too large range
                 # img = img / HM3D_DEPTH_FACTOR
-                img = np.clip(img, 0, METRIC_DEPTH_MAX)
+                img = np.clip(img, 0, METRIC_DEPTH_MAX_UNI)
                 # for relative depth
                 # HM3D_DEPTH_FACTOR = 1.0
                 # METRIC_DEPTH_MAX = 255.0
