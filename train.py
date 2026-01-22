@@ -23,16 +23,17 @@ from torchvision.utils import save_image
 import datetime 
 
 
-dir_path = Path("/cluster/project/cvg/boysun/Actmap_v3") 
+dir_path = Path("/mnt/hdd/Actmap_v3/") 
 dir_img = Path(dir_path / 'image/')
 dir_mask = Path(dir_path / 'weighted_mask/')
 dir_checkpoint = Path(dir_path / 'metric_checkpoints' / datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
-dir_depth = Path(dir_path / 'mono_depth/')
-dir_mono_depth = Path("/cluster/scratch/boysun/metric3d_depth/")
-multi_class_weights_path = Path("/cluster/project/cvg/boysun/Actmap_v3/debug/class_counts_uni_11.npy")
+dir_depth = Path(dir_path / 'depth/')
+dir_mono_depth = Path(dir_path / 'mono_depth/')
+multi_class_weights_path = Path("./dataset/class_counts_uni_11.npy")
 
 dir_debug = Path(dir_path / 'debug/')
 dir_debug.mkdir(parents=True, exist_ok=True)
+
 
 def save_debug_images(batch, epoch, batch_idx, prefix='train', num_images=5):
     """
@@ -188,7 +189,8 @@ def train_model(
         reg_loss_type = 'huber',
         reg_loss_cal_inmask = True,
         log_transform = True,
-        reg_ds_factor = 1.0
+        reg_ds_factor = 1.0,
+        resume_checkpoint: str = None
 ):
     # 1. Create dataset
     data_augmentation = True
@@ -269,6 +271,20 @@ def train_model(
     
     grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
 
+    # Load checkpoint if resuming
+    start_epoch = 1
+    global_step = 0
+    if resume_checkpoint:
+        checkpoint = torch.load(resume_checkpoint, map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        start_epoch = checkpoint['epoch'] + 1
+        global_step = checkpoint['global_step']
+        grad_scaler.load_state_dict(checkpoint['grad_scaler_state_dict'])
+        logging.info(f'Resuming from checkpoint: {resume_checkpoint}')
+        logging.info(f'Starting from epoch {start_epoch}, global step {global_step}')
+
     # 5. set up losses
     # loss_fn_rg = weighted_mse_loss
     # if reg_loss_type == 'l1_inv':
@@ -287,13 +303,12 @@ def train_model(
     # loss_fn_df = df_in_neighbor_loss
     loss_fn_df = df_normalized_loss_in_neighbor
 
-    global_step = 0 
     class_loss_weight = 1.0
     reg_loss_weight = reg_loss_weight       
     # weight of regression loss really matters, 5.0 is a tested good one, if it's higher, e.g., 10.0, cls result becomes worse
 
     # 6. Begin training
-    for epoch in range(1, epochs + 1):
+    for epoch in range(start_epoch, epochs + 1):
         model.train()
         epoch_loss = 0
         with tqdm(total=n_train, desc=f'Epoch {epoch}/{epochs}', unit='img') as pbar:
@@ -519,12 +534,39 @@ def train_model(
 
         if save_checkpoint and epoch % 2 == 0:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
-            state_dict = model.state_dict()
             use_depth_str = 'depth' if use_depth else 'no_depth'
             use_depth_str += '_mono' if use_mono_depth else ''
             reg_weights = str(reg_loss_weight)
-            torch.save(state_dict, str(dir_checkpoint / f'CP_epoch{epoch}_{use_depth_str}_{only_depth}_{reg_weights}.pth'))
+
+            # Save inference checkpoint (model weights only)
+            state_dict = model.state_dict()
+            inference_path = dir_checkpoint / f'CP_epoch{epoch}_{use_depth_str}_{only_depth}_{reg_weights}.pth'
+            torch.save(state_dict, str(inference_path))
+
+            # Save full checkpoint for resuming training
+            full_checkpoint = {
+                'epoch': epoch,
+                'global_step': global_step,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'grad_scaler_state_dict': grad_scaler.state_dict(),
+                'config': {
+                    'use_depth': use_depth,
+                    'only_depth': only_depth,
+                    'use_mono_depth': use_mono_depth,
+                    'reg_loss_weight': reg_loss_weight,
+                    'head_mode': head_mode,
+                    'learning_rate': learning_rate,
+                    'reg_ds_factor': reg_ds_factor
+                }
+            }
+            resume_path = dir_checkpoint / f'RESUME_epoch{epoch}_{use_depth_str}_{only_depth}_{reg_weights}.pth'
+            torch.save(full_checkpoint, str(resume_path))
+
             logging.info(f'Checkpoint {epoch} saved!')
+            logging.info(f'  Inference: {inference_path}')
+            logging.info(f'  Resume: {resume_path}')
 
 
 def get_args():
@@ -546,6 +588,7 @@ def get_args():
     parser.add_argument('--use_mono_depth','-umd', action='store_true', default=False, help='Use mono depth image as training input')
     parser.add_argument('--head_mode', type=str, default='segmentation', help='both or segmentation or regression')
     parser.add_argument('--regression_downsample_factor','-rdf', type=float, default=1.0, help='Downsample factor for regression head')
+    parser.add_argument('--resume', '-r', type=str, default=None, help='Path to checkpoint to resume training from (RESUME_*.pth file)')
     return parser.parse_args()
 
 
@@ -610,7 +653,8 @@ if __name__ == '__main__':
             reg_loss_weight=args.reg_loss_weight,
             head_mode = head_mode,
             weight_decay=1e-7,
-            reg_ds_factor=args.regression_downsample_factor
+            reg_ds_factor=args.regression_downsample_factor,
+            resume_checkpoint=args.resume
         )
     except torch.cuda.OutOfMemoryError:
         logging.error('Detected OutOfMemoryError! '
@@ -633,5 +677,6 @@ if __name__ == '__main__':
             reg_loss_weight=args.reg_loss_weight,
             head_mode = head_mode,
             weight_decay=1e-7,
-            reg_ds_factor=args.regression_downsample_factor
+            reg_ds_factor=args.regression_downsample_factor,
+            resume_checkpoint=args.resume
             )
