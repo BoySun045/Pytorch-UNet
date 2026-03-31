@@ -20,17 +20,19 @@ from utils.regression_loss import masked_f1_loss, reverse_log_transform
 from utils.df_loss import df_normalized_loss_in_neighbor, denormalize_df
 from utils.utils import downsample_torch_mask
 from torchvision.utils import save_image
-import datetime 
+import datetime
+import os
+import sys
+sys.path.insert(0, "/cluster/project/cvg/students/shangwu/dpt_distillation_repo")
+from data import InterestDataset, collate_interest as collate_idp
 
 
-dir_path = Path("/mnt/hdd/Actmap_v3/") 
-dir_img = Path(dir_path / 'image/')
-dir_mask = Path(dir_path / 'weighted_mask/')
-dir_checkpoint = Path(dir_path / 'checkpoints' / datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
-dir_depth = Path(dir_path / 'mono_depth/')
-multi_class_weights_path = Path("./dataset/class_counts_uni_11.npy")
+dir_img = Path("/cluster/project/cvg/students/shangwu/GEN3C/assets/diffusion/dataset_all")
+dit_features_dir = Path("/cluster/project/cvg/students/shangwu/GEN3C/features_analysis/dit_features")
+idp_cache_dir = Path(os.environ.get("SCRATCH", "/tmp")) / "cache_idp_features"
+dir_checkpoint = Path("/cluster/project/cvg/students/shangwu/Pytorch-UNet/checkpoints") / datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 
-dir_debug = Path(dir_path / 'debug/')
+dir_debug = Path("/cluster/project/cvg/students/shangwu/Pytorch-UNet/debug/")
 dir_debug.mkdir(parents=True, exist_ok=True)
 
 def save_debug_images(batch, epoch, batch_idx, prefix='train', num_images=5):
@@ -193,20 +195,16 @@ def train_model(
     data_augmentation = False
     log_transform = log_transform
 
-    # Always load depth, but only use it if set 
-    try:
-        dataset = CarvanaDataset(dir_img, dir_mask,dir_depth, 
-                                 img_scale,
-                                 gen_mono_depth = use_mono_depth,
-                                 seg_num_classes=model.n_classes,
-                                 data_augmentation=data_augmentation, log_transform=log_transform)
-        
-    except (AssertionError, RuntimeError, IndexError):
-        dataset = BasicDataset(dir_img, dir_mask, dir_depth,
-                                img_scale, 
-                                gen_mono_depth = use_mono_depth,
-                                seg_num_classes=model.n_classes,
-                                data_augmentation=data_augmentation, log_transform=log_transform)
+    # Build dataset from IDP cache
+    dataset = InterestDataset(
+        image_dir=str(dir_img),
+        dit_features_dir=str(dit_features_dir),
+        image_size=(544, 720),
+        idp_cache_dir=str(idp_cache_dir),
+        num_classes=model.n_classes,
+        seg_bin_edges=(0.05, 0.15, 0.3, 0.45, 0.6, 0.8),
+        augment=data_augmentation,
+    )
 
     # 2. Subset the dataset
     total_size = int(len(dataset) * dataset_portion)
@@ -219,12 +217,12 @@ def train_model(
     print(f"Train size: {n_train}, Validation size: {n_val}")
 
     # 4. Create data loaders
-    loader_args = dict(batch_size=batch_size, num_workers=16, pin_memory=True)  # num_workers=0 for pdb debugging
+    loader_args = dict(batch_size=batch_size, num_workers=16, pin_memory=True, collate_fn=collate_idp)
     train_loader = DataLoader(train_set, shuffle=True, **loader_args)
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
     # (Initialize logging)
-    experiment = wandb.init(project='U-Net-resnet-v3', resume='allow', anonymous='must')
+    experiment = wandb.init(project='U-Net-resnet-v3', entity='ftnet-wm', resume='allow', anonymous='must')
     experiment.config.update(
         dict(epochs=epochs, 
              batch_size=batch_size, 
@@ -279,15 +277,9 @@ def train_model(
     #     loss_fn_rg = weighted_huber_loss
 
     loss_fn_rg = masked_f1_loss
-    if model.n_classes > 1:
-        loss_fn_cl = weighted_mask_cross_entropy_loss(ignore_idx=0, 
-                                                      weights=np.load(multi_class_weights_path),
-                                                      num_classes=model.n_classes)
-    else:
-        loss_fn_cl = nn.BCEWithLogitsLoss()
-
-    # loss_fn_df = df_in_neighbor_loss
-    loss_fn_df = df_normalized_loss_in_neighbor
+    # For df_seg with IDP: CE+Dice on label_mask; masked L1 on the [0,1] interest map
+    loss_fn_cl = nn.CrossEntropyLoss(ignore_index=0)
+    loss_fn_df = None  # replaced inline in df_seg branch
 
     global_step = 0 
     class_loss_weight = 1.0
@@ -301,35 +293,19 @@ def train_model(
         with tqdm(total=n_train, desc=f'Epoch {epoch}/{epochs}', unit='img') as pbar:
             for _, batch in enumerate(train_loader):
 
-                true_masks, true_binary_masks = batch['mask'], batch['binary_mask']
-                true_df = batch['df']
                 images = batch['image']
-                depth = batch['depth'] if not use_mono_depth else batch['mono_depth']
-                label_mask = batch['label_mask']
-
-                # assert images.shape[1] + depth.shape[1] == model.n_channels, \
-                assert images.shape[1] + depth.shape[1] == 4, \
-                    f'Network has been defined with {4} input channels, ' \
-                    f'but loaded images have {images.shape[1]} channels. Please check that ' \
-                    'the images are loaded correctly.'
+                interest = batch['interest']   # [B, 1, H, W] IDP map, range [0, 1]
+                valid = batch['valid']         # [B, 1, H, W] bool
+                label_mask = batch['label_mask']  # [B, H, W] int64
 
                 images = images.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
-                depth = depth.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
+                interest = interest.to(device=device, dtype=torch.float32)
+                valid = valid.to(device=device)
+                label_mask = label_mask.to(device=device, dtype=torch.long)
 
-                if not only_depth:
-                    images = torch.cat([images, depth], dim=1) if use_depth else images
-                else:
-                    images = depth
-
-                true_masks = true_masks.to(device=device, dtype=torch.float32)
-                true_binary_masks = true_binary_masks.to(device=device, dtype=torch.float32)
-                true_df = true_df.to(device=device, dtype=torch.float32)
-                label_mask = label_mask.to(device=device, dtype=torch.float32)
-
-                # do downsample for gt mask 
-                ds_true_masks = downsample_torch_mask(true_masks, reg_ds_factor, "bilinear") if reg_ds_factor != 1.0 else true_masks
-                ds_true_binary_masks = downsample_torch_mask(true_binary_masks, reg_ds_factor, "nearest") if reg_ds_factor != 1.0 else true_binary_masks
-                ds_true_df = downsample_torch_mask(true_df, reg_ds_factor, "bilinear") if reg_ds_factor != 1.0 else true_df
+                # For compatibility with non-df_seg branches, provide fallback aliases
+                ds_true_df = interest.squeeze(1)   # [B, H, W]
+                ds_true_masks = interest.squeeze(1)
 
                 with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
 
@@ -383,26 +359,22 @@ def train_model(
 
                     elif head_mode == "df_seg":
                         df_pred, masks_pred = model(images)
-                        df_loss = loss_fn_df(df_pred.squeeze(1), ds_true_df)
-                        class_loss = loss_fn_cl(masks_pred.squeeze(1).float(), label_mask.long())
-                        # valid_mask = ds_true_df < 10
-                        valid_mask = label_mask != 0 
-                        # add one extra dim to valid mask, size as same as number of classes
-                        valid_mask = valid_mask.unsqueeze(1).repeat(1, model.n_classes, 1, 1)
+                        # Masked L1 on the [0,1] IDP interest map
+                        valid_flat = valid.squeeze(1)  # [B, H, W]
+                        df_loss = (F.l1_loss(df_pred.squeeze(1), interest.squeeze(1), reduction='none')
+                                   * valid_flat.float()).sum() / (valid_flat.sum() + 1e-6)
+                        # CE + Dice on the discretised label mask (0 = ignore)
+                        class_loss = loss_fn_cl(masks_pred, label_mask)
+                        valid_mask = (label_mask != 0).unsqueeze(1).repeat(1, model.n_classes, 1, 1)
                         class_loss += dice_loss(
                             F.softmax(masks_pred, dim=1).float(),
-                            F.one_hot(label_mask.long(), model.n_classes).permute(0, 3, 1, 2).float(),
+                            F.one_hot(label_mask, model.n_classes).permute(0, 3, 1, 2).float(),
                             valid_mask,
                             multiclass=True if model.n_classes > 1 else False
                         )
-
-                        # start to decay reg_loss_weight after 200 steps, min to 0.1
                         if global_step > 5000:
-                            reg_loss_weight = max(2.0, reg_loss_weight*0.99)
-                        loss = reg_loss_weight*df_loss + class_loss
-                        reg_loss = None
-                        
-                        loss = reg_loss_weight*df_loss + class_loss
+                            reg_loss_weight = max(2.0, reg_loss_weight * 0.99)
+                        loss = reg_loss_weight * df_loss + class_loss
                         reg_loss = None
 
                 optimizer.zero_grad(set_to_none=True)
@@ -426,7 +398,7 @@ def train_model(
 
                 # Evaluation round
                 # division_step = (n_train // (10 * batch_size))
-                division_step = 200
+                division_step = 10
                 if division_step > 0 and global_step % division_step == 0:
                     histograms = {}
                     for tag, value in model.named_parameters():
@@ -481,22 +453,20 @@ def train_model(
                         binary_mask = torch.zeros_like(true_masks)
 
                     elif head_mode == "df_seg":
-                        scheduler.step(1 - reg_loss_weight*val_score_df + val_score_cl)
-                        wandb_df_pred = denormalize_df(df_pred,df_neighborhood=10).squeeze(1)
+                        scheduler.step(1 - reg_loss_weight * val_score_df + val_score_cl)
+                        wandb_df_pred = df_pred.squeeze(1)          # [B, H, W] already [0,1]
                         softmax_pred = F.softmax(masks_pred, dim=1)
                         max_class_pred = torch.argmax(softmax_pred, dim=1, keepdim=True)
-                        # wandb_mask_pred = max_class_pred.squeeze(1) * (true_df < 10)
                         wandb_mask_pred = max_class_pred.squeeze(1) * (label_mask != 0)
-                        binary_mask = torch.zeros_like(true_masks)
+                        binary_mask = torch.zeros_like(interest.squeeze(1))
 
                     logging.info(f'Validation Classification Dice score: {val_score_cl}')
                     logging.info(f'Validation Regression mse : {val_score_rg}')
                     logging.info(f'Validation distance field mse : {val_score_df}')
 
-                    # since image could be 4 channels, we need to convert it to 3 channels to get the rgb image
                     wandb_rgb = images[:, :3, :, :]
-                    wandb_depth = depth.squeeze(1)
-        
+                    wandb_depth = interest.squeeze(1)   # show IDP map in place of depth slot
+
                     log_images(experiment, optimizer,
                                  val_score_cl, val_score_rg, val_score_df,
                                  wandb_rgb, wandb_depth,
@@ -577,7 +547,7 @@ if __name__ == '__main__':
 
     if args.load:
         state_dict = torch.load(args.load, map_location=device)
-        del state_dict['mask_values']
+        state_dict.pop('mask_values', None)
         model.load_state_dict(state_dict)
         logging.info(f'Model loaded from {args.load}')
 

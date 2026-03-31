@@ -9,3 +9,8 @@ venv/
 wandb/
 slurm*
 mono_depth/
+
+Actmap*/
+*dummy/
+*.png
+*.jpg

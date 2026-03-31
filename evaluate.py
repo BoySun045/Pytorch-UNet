@@ -27,26 +27,17 @@ def evaluate(net, dataloader, device, amp, use_depth=False,
 
     with torch.autocast(autocast_device, enabled=amp):
         for batch in tqdm(dataloader, total=num_val_batches, desc='Validation round', unit='batch', leave=False):
-            image, mask_true = batch['image'], batch['mask']
-            true_binary_mask = batch['binary_mask']
-            depth = batch['depth'] if not use_mono_depth else batch['mono_depth']
-            df = batch['df']
-            label_mask = batch['label_mask']
-
-            if use_depth and not only_depth:
-                image = torch.cat((image, depth), dim=1)
-            if only_depth:
-                image = depth
+            image = batch['image']
+            interest = batch['interest']   # [B, 1, H, W] IDP map [0, 1]
+            valid = batch['valid']         # [B, 1, H, W] bool
+            label_mask = batch['label_mask']  # [B, H, W] int64
 
             image = image.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
-            mask_true = mask_true.to(device=device, dtype=torch.float32)
-            true_binary_mask = true_binary_mask.to(device=device, dtype=torch.float32)
-            true_df = df.to(device=device, dtype=torch.float32)
+            interest = interest.to(device=device, dtype=torch.float32)
+            valid = valid.to(device=device)
             label_mask = label_mask.to(device=device, dtype=torch.long)
 
-            ds_mask_true = downsample_torch_mask(mask_true, reg_ds_factor, ds_method='bilinear') if reg_ds_factor != 1.0 else mask_true
-            ds_true_binary_mask = downsample_torch_mask(true_binary_mask, reg_ds_factor, ds_method='nearest') if reg_ds_factor != 1.0 else true_binary_mask
-            ds_true_df = downsample_torch_mask(true_df, reg_ds_factor, ds_method='bilinear') if reg_ds_factor != 1.0 else true_df
+            ds_true_df = interest.squeeze(1)  # [B, H, W]
 
             if head_mode == "segmentation":
                 binary_pred = net(image)
@@ -75,17 +66,15 @@ def evaluate(net, dataloader, device, amp, use_depth=False,
 
             elif head_mode == "df_seg":
                 df_pred, masks_pred = net(image)
-                df_pred = denormalize_df(df_pred, df_neighborhood=10)
-                df_loss += loss_fn_df(df_pred.float().squeeze(1), ds_true_df)
-                # convert to one-hot format
-                mask_true = F.one_hot(label_mask, net.n_classes).permute(0, 3, 1, 2).float()
-                mask_pred = F.one_hot(masks_pred.argmax(dim=1), net.n_classes).permute(0, 3, 1, 2).float()
-                # compute the Dice score, ignoring nothing
-                valid_mask = ds_true_df < 5
-                # valid_mask = label_mask != 0
-                valid_mask = valid_mask.unsqueeze(1).repeat(1, net.n_classes, 1, 1)
-                dice_score += multiclass_dice_coeff(mask_pred, mask_true, valid_mask, reduce_batch_first=True)
-                # print(f"dice_score is {dice_score}")
+                # Masked L1 on the [0,1] IDP interest map
+                valid_flat = valid.squeeze(1)  # [B, H, W]
+                df_loss += (F.l1_loss(df_pred.squeeze(1), ds_true_df, reduction='none')
+                            * valid_flat.float()).sum() / (valid_flat.sum() + 1e-6)
+                # Dice score on segmentation head
+                mask_true_oh = F.one_hot(label_mask, net.n_classes).permute(0, 3, 1, 2).float()
+                mask_pred_oh = F.one_hot(masks_pred.argmax(dim=1), net.n_classes).permute(0, 3, 1, 2).float()
+                valid_mask = (label_mask != 0).unsqueeze(1).repeat(1, net.n_classes, 1, 1)
+                dice_score += multiclass_dice_coeff(mask_pred_oh, mask_true_oh, valid_mask, reduce_batch_first=True)
 
     net.train()
     avg_dice_score = dice_score / num_val_batches if dice_score != 0 else 0

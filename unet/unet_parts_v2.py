@@ -60,8 +60,6 @@ class PredictionModel(torch.nn.Module):
     def forward(self, x):
         """Sequentially pass `x` trough model`s encoder, decoder and heads"""
 
-        self.check_input_shape(x)
-
         # do the padding if needed
         h, w = x.shape[-2:]
         if h % self.output_stride != 0 or w % self.output_stride != 0:
@@ -219,7 +217,7 @@ class DecoderBlock(nn.Module):
             out_channels,
             kernel_size=3,
             padding=1,
-            use_batchnorm=use_batchnorm,
+            use_norm=use_batchnorm,
         )
         self.attention1 = md.Attention(attention_type, in_channels=in_channels + skip_channels)
         self.conv2 = md.Conv2dReLU(
@@ -227,7 +225,7 @@ class DecoderBlock(nn.Module):
             out_channels,
             kernel_size=3,
             padding=1,
-            use_batchnorm=use_batchnorm,
+            use_norm=use_batchnorm,
         )
         self.attention2 = md.Attention(attention_type, in_channels=out_channels)
 
@@ -249,14 +247,14 @@ class CenterBlock(nn.Sequential):
             out_channels,
             kernel_size=3,
             padding=1,
-            use_batchnorm=use_batchnorm,
+            use_norm=use_batchnorm,
         )
         conv2 = md.Conv2dReLU(
             out_channels,
             out_channels,
             kernel_size=3,
             padding=1,
-            use_batchnorm=use_batchnorm,
+            use_norm=use_batchnorm,
         )
         super().__init__(conv1, conv2)
 
