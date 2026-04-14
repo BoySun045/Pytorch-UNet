@@ -11,54 +11,24 @@ from tqdm import tqdm
 import wandb
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy.optimize import linear_sum_assignment
 
 from evaluate import evaluate
 from unet import TwoHeadUnet
-from utils.data_loading import BasicDataset, CarvanaDataset
-from utils.dice_score import dice_loss, weighted_mask_cross_entropy_loss
-from utils.regression_loss import masked_f1_loss, reverse_log_transform
-from utils.df_loss import df_normalized_loss_in_neighbor, denormalize_df
-from utils.utils import downsample_torch_mask
-from torchvision.utils import save_image
+from utils.dice_score import dice_loss
 import datetime
 import os
 import sys
 sys.path.insert(0, "/cluster/project/cvg/students/shangwu/dpt_distillation_repo")
 from data import InterestDataset, collate_interest as collate_idp
+from gmm_data import GmmDataset, collate_gmm
 
 
 dir_img = Path("/cluster/project/cvg/students/shangwu/GEN3C/assets/diffusion/dataset_all")
+dir_gmm = Path("/cluster/project/cvg/students/shangwu/FrontierNet/gmm_output")
 dit_features_dir = Path("/cluster/project/cvg/students/shangwu/GEN3C/features_analysis/dit_features")
 idp_cache_dir = Path(os.environ.get("SCRATCH", "/tmp")) / "cache_idp_features"
 dir_checkpoint = Path("/cluster/project/cvg/students/shangwu/Pytorch-UNet/checkpoints") / datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-
-dir_debug = Path("/cluster/project/cvg/students/shangwu/Pytorch-UNet/debug/")
-dir_debug.mkdir(parents=True, exist_ok=True)
-
-def save_debug_images(batch, epoch, batch_idx, prefix='train', num_images=5):
-    """
-    Saves a set of images, masks, and optionally depth maps from a batch for debugging.
-
-    Args:
-        batch (dict): The current batch of data containing 'image', 'mask', and optionally 'depth'.
-        epoch (int): Current epoch number for naming.
-        batch_idx (int): Current batch index for naming.
-        prefix (str): Prefix for the filenames to indicate training or validation phase.
-        num_images (int): Number of images to save from the batch.
-    """
-    images, masks = batch['image'][:num_images], batch['mask'][:num_images]
-    depths = batch['depth'][:num_images] if 'depth' in batch else None
-
-    for i in range(num_images):
-        # save images and masks under the dir_debug directory
-        img_path = f'{dir_debug}/{prefix}_epoch{epoch}_batch{batch_idx}_img{i}.jpg'
-        mask_path = f'{dir_debug}/{prefix}_epoch{epoch}_batch{batch_idx}_mask{i}.jpg'
-        save_image(images[i], img_path)
-        save_image(masks[i], mask_path)
-
-        if depths is not None:
-            depth_path = f'{dir_debug}/{prefix}_epoch{epoch}_batch{batch_idx}_depth{i}.png'
-            save_image(depths[i], depth_path)
 
 
 def plot_images(wandb_rgb, wandb_depth,
@@ -166,6 +136,325 @@ def log_images(experiment, optimizer,
 
 
         
+def hungarian_match_loss(
+    uv_pred, z_pred, conf_pred, weight_pred, occ_pred,
+    gmm_list, H, W, device,
+    z_weight=0.1, weight_loss_weight=0.1, occ_loss_weight=0.5,
+):
+    """Per-batch DETR Hungarian matching loss.
+
+    Args:
+        uv_pred          : (B, N, 2)  normalised predicted coords [0, 1]
+        z_pred           : (B, N, 1)  predicted depth [m]
+        conf_pred        : (B, N, 1)  predicted confidence [0, 1]
+        weight_pred      : (B, N, 1)  predicted GMM component weight (softplus)
+        occ_pred         : (B, N, 1)  predicted occlusion probability [0, 1]
+        gmm_list         : list of B dicts with 'centres_2d', 'centres_3d',
+                           'weights', and optionally 'occlusion'
+        H, W             : original image height / width (for GT normalisation)
+        z_weight         : weight of z term in bipartite matching cost and regression loss
+        weight_loss_weight: weight of GMM component weight L1 loss term
+        occ_loss_weight  : weight of occlusion BCE loss term
+
+    Returns:
+        match_loss, conf_loss, occ_loss  (scalars, averaged over batch)
+    """
+    B, N = uv_pred.shape[:2]
+    total_match = torch.tensor(0.0, device=device)
+    total_conf  = torch.tensor(0.0, device=device)
+    total_occ   = torch.tensor(0.0, device=device)
+
+    for b in range(B):
+        gmm_b      = gmm_list[b]
+        centres_2d = gmm_b.get("centres_2d", None)   # (K, 2) numpy, pixel (u, v)
+        centres_3d = gmm_b.get("centres_3d", None)   # (K, 3) numpy, camera [m]
+        gt_weights = gmm_b.get("weights",    None)   # (K,)   numpy
+        gt_occ_np  = gmm_b.get("occlusion",  None)   # (K,)   bool numpy or None
+
+        conf_targets = torch.zeros(N, device=device)
+
+        if centres_2d is None or len(centres_2d) == 0:
+            total_conf = total_conf + F.binary_cross_entropy(
+                conf_pred[b].squeeze(-1), conf_targets
+            )
+            continue
+
+        K = len(centres_2d)
+
+        # Normalise GT uv to [0, 1]
+        gt_uv = torch.tensor(centres_2d, device=device, dtype=torch.float32)
+        gt_uv[:, 0] /= W
+        gt_uv[:, 1] /= H
+
+        gt_z = torch.zeros(K, device=device, dtype=torch.float32)
+        if centres_3d is not None:
+            gt_z = torch.tensor(centres_3d[:, 2], device=device, dtype=torch.float32)
+
+        # --- Build cost matrix (no grad) -----------------------------------
+        uv_b = uv_pred[b]              # (N, 2)
+        z_b  = z_pred[b].squeeze(-1)   # (N,)
+
+        with torch.no_grad():
+            cost_uv = torch.cdist(uv_b.detach(), gt_uv, p=1)                    # (N, K)
+            cost_z  = torch.abs(z_b.detach().unsqueeze(1) - gt_z.unsqueeze(0))  # (N, K)
+            cost    = cost_uv + z_weight * cost_z                                # (N, K)
+
+        row_ind, col_ind = linear_sum_assignment(cost.cpu().numpy())
+
+        # --- Regression loss on matched slots (uv + z + weight) -----------
+        if len(row_ind) > 0:
+            reg = F.l1_loss(uv_b[row_ind], gt_uv[col_ind])
+            reg = reg + z_weight * F.l1_loss(z_b[row_ind], gt_z[col_ind])
+
+            if gt_weights is not None:
+                gt_w_t = torch.tensor(
+                    gt_weights[col_ind], device=device, dtype=torch.float32
+                )
+                reg = reg + weight_loss_weight * F.l1_loss(
+                    weight_pred[b][row_ind].squeeze(-1), gt_w_t
+                )
+
+            total_match = total_match + reg
+
+        # --- Confidence loss: matched → 1, unmatched → 0 ------------------
+        conf_targets[row_ind] = 1.0
+        total_conf = total_conf + F.binary_cross_entropy(
+            conf_pred[b].squeeze(-1), conf_targets
+        )
+
+        # --- Occlusion loss on matched slots (only when GT available) ------
+        if gt_occ_np is not None and len(row_ind) > 0:
+            gt_occ_t = torch.tensor(
+                gt_occ_np[col_ind].astype(np.float32), device=device
+            )
+            total_occ = total_occ + occ_loss_weight * F.binary_cross_entropy(
+                occ_pred[b][row_ind].squeeze(-1), gt_occ_t
+            )
+
+    return total_match / B, total_conf / B, total_occ / B
+
+
+def plot_detr_predictions(
+    rgb, uv_pred, z_pred, conf_pred, weight_pred, occ_pred,
+    gmm_list, H, W, conf_thresh=0.3,
+):
+    """Overlay predicted and GT frontier centres on the first batch image.
+
+    GT centres: lime × = visible, red × = occluded.  Label shows z and weight.
+    Predicted slots above conf_thresh: colour = occlusion prob (green→red),
+        label shows z, confidence, predicted weight and occlusion probability.
+    """
+    img_np = rgb[0].cpu().permute(1, 2, 0).float().numpy().clip(0, 1)
+
+    fig, ax = plt.subplots(1, 1, figsize=(10, 7))
+    ax.imshow(img_np)
+
+    # --- GT centres --------------------------------------------------------
+    gmm_b      = gmm_list[0]
+    centres_2d = gmm_b.get("centres_2d", None)
+    centres_3d = gmm_b.get("centres_3d", None)
+    gt_weights = gmm_b.get("weights",    None)
+    gt_occ     = gmm_b.get("occlusion",  None)
+    if centres_2d is not None and len(centres_2d) > 0:
+        for k, (u, v) in enumerate(centres_2d):
+            is_occ   = bool(gt_occ[k]) if gt_occ is not None else False
+            gt_color = "red" if is_occ else "lime"
+            ax.scatter(u, v, s=120, c=gt_color, marker="x", linewidths=2)
+            gt_z_val = float(centres_3d[k, 2]) if centres_3d is not None else float("nan")
+            gt_w_val = float(gt_weights[k]) if gt_weights is not None else float("nan")
+            occ_str  = " OCC" if is_occ else ""
+            ax.annotate(f"GT z={gt_z_val:.1f}m w={gt_w_val:.2f}{occ_str}",
+                        xy=(u, v), xytext=(4, -12), textcoords="offset points",
+                        color=gt_color, fontsize=7,
+                        bbox=dict(boxstyle="round,pad=0.1", fc="black", alpha=0.4))
+
+    # --- Predicted slots above threshold -----------------------------------
+    uv_np     = uv_pred[0].cpu().detach().numpy()               # (N, 2)
+    z_np      = z_pred[0].squeeze(-1).cpu().detach().numpy()    # (N,)
+    conf_np   = conf_pred[0].squeeze(-1).cpu().detach().numpy() # (N,)
+    weight_np = weight_pred[0].squeeze(-1).cpu().detach().numpy() # (N,)
+    occ_np    = occ_pred[0].squeeze(-1).cpu().detach().numpy()  # (N,)
+    for n in range(len(uv_np)):
+        if conf_np[n] >= conf_thresh:
+            u_px = uv_np[n, 0] * W
+            v_px = uv_np[n, 1] * H
+            # colour interpolates green (not occluded) → red (occluded)
+            slot_color = (float(occ_np[n]), 1.0 - float(occ_np[n]), 0.0)
+            ax.scatter(u_px, v_px, s=80 * conf_np[n], color=slot_color, marker="o",
+                       alpha=float(conf_np[n]))
+            ax.annotate(
+                f"z={z_np[n]:.1f}m c={conf_np[n]:.2f}\nw={weight_np[n]:.2f} occ={occ_np[n]:.2f}",
+                xy=(u_px, v_px), xytext=(4, 6), textcoords="offset points",
+                color="white", fontsize=7,
+                bbox=dict(boxstyle="round,pad=0.1", fc="black", alpha=0.4),
+            )
+
+    ax.axis("off")
+    ax.set_title(
+        "DETR: GT limex=visible redx=occluded | pred colour=occ prob (green→red)"
+    )
+
+    plt.tight_layout()
+    fig.canvas.draw()
+    w, h = fig.canvas.get_width_height()
+    img_array = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8).reshape(h, w, 4)
+    img_array = img_array[:, :, :3]
+    plt.close(fig)
+    return img_array
+
+
+def plot_detr_3d(uv_pred, z_pred, conf_pred, gmm_list, H, W, conf_thresh=0.3):
+    """3-D matplotlib figure: GT GMM ellipsoids + DETR predicted centres.
+
+    GT components (warm colourmap spheres + wireframe ellipsoids).
+    Predicted slots above conf_thresh (cyan triangles), back-projected to 3-D
+    using the GmmDataset camera intrinsics.
+    """
+    from mpl_toolkits.mplot3d import Axes3D   # noqa: F401 (registers 3d projection)
+
+    # Camera intrinsics matching GmmDataset._CAM_F / _CAM_W / _CAM_H
+    CAM_F = 300.0
+    fx = CAM_F * (W / 720.0)
+    fy = CAM_F * (H / 544.0)
+    cx, cy = W / 2.0, H / 2.0
+
+    gmm_b       = gmm_list[0]
+    centres_3d  = gmm_b.get("centres_3d",  None)   # (K, 3)
+    covariances = gmm_b.get("covariances", None)    # (K, 3, 3)
+    weights     = gmm_b.get("weights",     None)    # (K,)
+
+    fig = plt.figure(figsize=(10, 8))
+    ax  = fig.add_subplot(111, projection="3d")
+
+    # Unit sphere vertices (reused for every ellipsoid)
+    _u  = np.linspace(0, 2 * np.pi, 20)
+    _v  = np.linspace(0,     np.pi, 20)
+    sx  = np.outer(np.cos(_u), np.sin(_v))
+    sy  = np.outer(np.sin(_u), np.sin(_v))
+    sz  = np.outer(np.ones_like(_u), np.cos(_v))
+    sphere_pts = np.stack([sx.ravel(), sy.ravel(), sz.ravel()], axis=1)  # (400, 3)
+
+    # --- GT GMM components ------------------------------------------------
+    if centres_3d is not None and len(centres_3d) > 0:
+        K      = len(centres_3d)
+        w_norm = weights / (weights.max() + 1e-8) if weights is not None else np.ones(K)
+        colors = plt.cm.hot(np.linspace(0.3, 1.0, K))
+
+        for i in range(K):
+            c   = centres_3d[i]
+            col = colors[i]
+
+            ax.scatter(*c,
+                       s=100 * (0.5 + 0.5 * w_norm[i]),
+                       c=[col], marker="o",
+                       label=f"GT #{i}  z={c[2]:.1f}m  w={w_norm[i]:.2f}")
+
+            if covariances is not None:
+                cov              = covariances[i]
+                eigvals, eigvecs = np.linalg.eigh(cov)
+                eigvals          = np.clip(eigvals, 1e-8, None)
+                scale            = np.sqrt(eigvals)
+
+                R = eigvecs.copy()
+                if np.linalg.det(R) < 0:
+                    R[:, 0] *= -1
+
+                ell_pts = (R @ (sphere_pts * scale).T).T + c  # (400, 3)
+                ex = ell_pts[:, 0].reshape(20, 20)
+                ey = ell_pts[:, 1].reshape(20, 20)
+                ez = ell_pts[:, 2].reshape(20, 20)
+                ax.plot_wireframe(ex, ey, ez,
+                                  color=col, alpha=0.2, linewidth=0.5)
+
+    # --- Back-project predicted slots to 3-D -----------------------------
+    uv_np   = uv_pred[0].cpu().detach().numpy()           # (N, 2)
+    z_np    = z_pred[0].squeeze(-1).cpu().detach().numpy()   # (N,)
+    conf_np = conf_pred[0].squeeze(-1).cpu().detach().numpy()  # (N,)
+
+    pred_pts = []
+    for n in range(len(uv_np)):
+        if conf_np[n] >= conf_thresh:
+            u_px = uv_np[n, 0] * W
+            v_px = uv_np[n, 1] * H
+            z    = z_np[n]
+            x    = (u_px - cx) * z / fx
+            y    = (v_px - cy) * z / fy
+            pred_pts.append((x, y, z))
+
+    if pred_pts:
+        xs, ys, zs = zip(*pred_pts)
+        ax.scatter(xs, ys, zs, s=80, c="cyan", marker="^",
+                   alpha=0.9, label=f"Pred  conf≥{conf_thresh:.1f}")
+
+    ax.set_xlabel("X [m]")
+    ax.set_ylabel("Y [m]")
+    ax.set_zlabel("Z [m]")
+    ax.set_title("DETR 3-D: GT ellipsoids (warm) · predictions (cyan ▲)")
+    ax.legend(fontsize=7, loc="upper left")
+
+    plt.tight_layout()
+    fig.canvas.draw()
+    w, h = fig.canvas.get_width_height()
+    img_array = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8).reshape(h, w, 4)
+    img_array = img_array[:, :, :3]
+    plt.close(fig)
+    return img_array
+
+
+def plot_detr_depth(depth_pred, depth_gt):
+    """1×3 figure: GT depth | predicted depth | absolute error.
+
+    Args:
+        depth_pred : [B, 1, H, W] float32 tensor  — aux depth head output
+        depth_gt   : [B, 1, H, W] float32 tensor  — scene depth from depth_dir
+
+    Only the first batch element is shown.
+    """
+    def to_np(t):
+        return t[0, 0].cpu().detach().float().numpy()
+
+    gt_np   = to_np(depth_gt)
+    pred_np = to_np(depth_pred)
+    err_np  = np.abs(pred_np - gt_np)
+
+    valid = gt_np > 0.0   # mask out invalid (zero) depth pixels
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+
+    vmin = float(gt_np[valid].min()) if valid.any() else 0.0
+    vmax = float(gt_np[valid].max()) if valid.any() else 1.0
+
+    ax = axes[0]
+    disp = np.where(valid, gt_np, np.nan)
+    im = ax.imshow(disp, cmap="plasma", vmin=vmin, vmax=vmax)
+    fig.colorbar(im, ax=ax, fraction=0.03, label="m")
+    ax.set_title(f"GT depth [m]  (valid={valid.mean():.2%})")
+    ax.axis("off")
+
+    ax = axes[1]
+    disp = np.where(valid, pred_np, np.nan)
+    im = ax.imshow(disp, cmap="plasma", vmin=vmin, vmax=vmax)
+    fig.colorbar(im, ax=ax, fraction=0.03, label="m")
+    mae = float(err_np[valid].mean()) if valid.any() else float("nan")
+    ax.set_title(f"Pred depth [m]  (MAE={mae:.3f}m)")
+    ax.axis("off")
+
+    ax = axes[2]
+    disp = np.where(valid, err_np, np.nan)
+    im = ax.imshow(disp, cmap="hot", vmin=0)
+    fig.colorbar(im, ax=ax, fraction=0.03, label="m")
+    ax.set_title("|error| [m]")
+    ax.axis("off")
+
+    plt.tight_layout()
+    fig.canvas.draw()
+    w, h = fig.canvas.get_width_height()
+    img_array = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8).reshape(h, w, 4)
+    img_array = img_array[:, :, :3]
+    plt.close(fig)
+    return img_array
+
+
 def train_model(
         model,
         device,
@@ -177,34 +466,41 @@ def train_model(
         img_scale: float = 0.5,
         amp: bool = False,
         weight_decay: float = 1e-8,
-        momentum: float = 0.9,
         gradient_clipping: float = 1.0,
         use_depth: bool = False,
         only_depth: bool = False,
         use_mono_depth: bool = False,
         reg_loss_weight: float = 1.0,
-        head_mode: str = 'segmentation',
+        head_mode: str = 'df_seg',
         dataset_portion: float = 1.0,
         lr_decay: bool = True,
-        reg_loss_type = 'huber',
-        reg_loss_cal_inmask = True,
-        log_transform = True,
-        reg_ds_factor = 1.0
+        reg_ds_factor = 1.0,
+        aux_depth_weight: float = 0.5,
 ):
     # 1. Create dataset
     data_augmentation = False
-    log_transform = log_transform
 
-    # Build dataset from IDP cache
-    dataset = InterestDataset(
-        image_dir=str(dir_img),
-        dit_features_dir=str(dit_features_dir),
-        image_size=(544, 720),
-        idp_cache_dir=str(idp_cache_dir),
-        num_classes=model.n_classes,
-        seg_bin_edges=(0.05, 0.15, 0.3, 0.45, 0.6, 0.8),
-        augment=data_augmentation,
-    )
+    if head_mode == "detr":
+        dataset = GmmDataset(
+            gmm_dir="/cluster/project/cvg/students/shangwu/Pytorch-UNet/gmm_dummy/gmm",
+            image_dir="/cluster/project/cvg/students/shangwu/Pytorch-UNet/gmm_dummy/image",
+            depth_dir="/cluster/project/cvg/students/shangwu/Pytorch-UNet/gmm_dummy/depth",
+            image_size=(544, 720),
+            augment=data_augmentation,
+        )
+        collate_fn = collate_gmm
+    else:
+        # Build dataset from IDP cache
+        dataset = InterestDataset(
+            image_dir=str(dir_img),
+            dit_features_dir=str(dit_features_dir),
+            image_size=(544, 720),
+            idp_cache_dir=str(idp_cache_dir),
+            num_classes=model.n_classes,
+            seg_bin_edges=(0.05, 0.15, 0.3, 0.45, 0.6, 0.8),
+            augment=data_augmentation,
+        )
+        collate_fn = collate_idp
 
     # 2. Subset the dataset
     total_size = int(len(dataset) * dataset_portion)
@@ -217,31 +513,26 @@ def train_model(
     print(f"Train size: {n_train}, Validation size: {n_val}")
 
     # 4. Create data loaders
-    loader_args = dict(batch_size=batch_size, num_workers=16, pin_memory=True, collate_fn=collate_idp)
+    loader_args = dict(batch_size=batch_size, num_workers=16, pin_memory=True, collate_fn=collate_fn)
     train_loader = DataLoader(train_set, shuffle=True, **loader_args)
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
     # (Initialize logging)
     experiment = wandb.init(project='U-Net-resnet-v3', entity='ftnet-wm', resume='allow', anonymous='must')
     experiment.config.update(
-        dict(epochs=epochs, 
-             batch_size=batch_size, 
+        dict(epochs=epochs,
+             batch_size=batch_size,
              learning_rate=learning_rate,
-             val_percent=val_percent, 
+             val_percent=val_percent,
              save_checkpoint=save_checkpoint,
-             trainer_momentum=momentum,
              dataset_portion=dataset_portion,
              do_data_augmentation=data_augmentation,
              use_depth=use_depth,
              only_depth=only_depth,
-             use_mono_depth = use_mono_depth,
-             img_scale=img_scale,
-             regloss_weight = reg_loss_weight,
-             lr_decay = lr_decay,
-             regression_loss_fn = reg_loss_type,
-             regression_loss_cal_inmask = reg_loss_cal_inmask,
-             log_transform = log_transform,
-             regression_downsample_factor = reg_ds_factor, 
+             use_mono_depth=use_mono_depth,
+             regloss_weight=reg_loss_weight,
+             lr_decay=lr_decay,
+             regression_downsample_factor=reg_ds_factor,
              amp=amp)
     )
 
@@ -258,8 +549,6 @@ def train_model(
     ''')
 
     # 4. Set up the optimizer, the loss, the learning rate scheduler and the loss scaling for AMP
-    # optimizer = optim.RMSprop(model.parameters(),
-    #                           lr=learning_rate, weight_decay=weight_decay, momentum=momentum)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
     if lr_decay:
@@ -270,21 +559,11 @@ def train_model(
     grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
 
     # 5. set up losses
-    # loss_fn_rg = weighted_mse_loss
-    # if reg_loss_type == 'l1_inv':
-    #     loss_fn_rg = weighted_l1_inverse_loss
-    # else:
-    #     loss_fn_rg = weighted_huber_loss
-
-    loss_fn_rg = masked_f1_loss
-    # For df_seg with IDP: CE+Dice on label_mask; masked L1 on the [0,1] interest map
+    # For df_seg: CE+Dice on label_mask; masked L1 on the [0,1] interest map
     loss_fn_cl = nn.CrossEntropyLoss(ignore_index=0)
-    loss_fn_df = None  # replaced inline in df_seg branch
 
-    global_step = 0 
-    class_loss_weight = 1.0
-    reg_loss_weight = reg_loss_weight       
-    # weight of regression loss really matters, 5.0 is a tested good one, if it's higher, e.g., 10.0, cls result becomes worse
+    global_step = 0
+    reg_loss_weight = reg_loss_weight
 
     # 6. Begin training
     for epoch in range(1, epochs + 1):
@@ -293,77 +572,26 @@ def train_model(
         with tqdm(total=n_train, desc=f'Epoch {epoch}/{epochs}', unit='img') as pbar:
             for _, batch in enumerate(train_loader):
 
-                images = batch['image']
-                interest = batch['interest']   # [B, 1, H, W] IDP map, range [0, 1]
-                valid = batch['valid']         # [B, 1, H, W] bool
-                label_mask = batch['label_mask']  # [B, H, W] int64
+                images = batch['image'].to(
+                    device=device, dtype=torch.float32,
+                    memory_format=torch.channels_last,
+                )
 
-                images = images.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
-                interest = interest.to(device=device, dtype=torch.float32)
-                valid = valid.to(device=device)
-                label_mask = label_mask.to(device=device, dtype=torch.long)
-
-                # For compatibility with non-df_seg branches, provide fallback aliases
-                ds_true_df = interest.squeeze(1)   # [B, H, W]
-                ds_true_masks = interest.squeeze(1)
+                # IDP-only keys — only available outside detr mode
+                if head_mode != "detr":
+                    interest   = batch['interest'].to(device=device, dtype=torch.float32)
+                    valid      = batch['valid'].to(device=device)
+                    label_mask = batch['label_mask'].to(device=device, dtype=torch.long)
+                    ds_true_df    = interest.squeeze(1)   # [B, H, W]
+                    ds_true_masks = interest.squeeze(1)
 
                 with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
 
-                    if head_mode == 'both':
-                        binary_pred, masks_pred = model(images)
-
-                        # reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float(), true_binary_masks.float(), 
-                        #                       increase_factor=5.0, avg_using_binary_mask=reg_loss_cal_inmask)
-
-                        reg_loss = loss_fn_rg(masks_pred.squeeze(1), ds_true_masks.float(), ds_true_binary_masks.float(),
-                                                increase_factor=5.0, avg_using_binary_mask=reg_loss_cal_inmask)
-
-                        class_loss = loss_fn_cl(binary_pred.squeeze(1), true_binary_masks.float())
-                        class_loss += dice_loss(F.sigmoid(binary_pred.squeeze(1)), true_binary_masks.float(), multiclass=False)
-                        class_loss = class_loss_weight * class_loss
-                        reg_loss = reg_loss_weight * reg_loss
-                        loss = reg_loss + class_loss
-
-                    elif head_mode == 'segmentation':
-                        binary_pred = model(images)
-                        class_loss = loss_fn_cl(binary_pred.squeeze(1), true_binary_masks.float())
-                        class_loss += dice_loss(F.sigmoid(binary_pred.squeeze(1)), true_binary_masks.float(), multiclass=False)
-                        loss =  class_loss
-
-                        reg_loss = None
-                        
-                    elif head_mode == 'regression':
-                        masks_pred = model(images)
-                        # reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float(), true_binary_masks.float(), 
-                        #                       increase_factor=8.0, avg_using_binary_mask=False)
-                        # wf loss
-                        reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float())
-                        loss = reg_loss
-                        
-                        df_loss = None
-                        class_loss = None
-                    
-                    elif head_mode == 'df':
-                        df_pred = model(images)
-                        df_loss = loss_fn_df(df_pred.squeeze(1), ds_true_df)
-                        loss = df_loss
-                        class_loss = None
-                        reg_loss = None
-
-                    elif head_mode == "df_wf":
+                    if head_mode == "df_seg":
                         df_pred, masks_pred = model(images)
-                        reg_loss = loss_fn_rg(masks_pred.squeeze(1), true_masks.float(), df = ds_true_df)
-                        df_loss = loss_fn_df(df_pred.squeeze(1), ds_true_df)
-                        loss = reg_loss_weight*reg_loss + df_loss
-                        class_loss = None
-
-                    elif head_mode == "df_seg":
-                        df_pred, masks_pred = model(images)
-                        # Masked L1 on the [0,1] IDP interest map
                         valid_flat = valid.squeeze(1)  # [B, H, W]
                         df_loss = (F.l1_loss(df_pred.squeeze(1), interest.squeeze(1), reduction='none')
                                    * valid_flat.float()).sum() / (valid_flat.sum() + 1e-6)
-                        # CE + Dice on the discretised label mask (0 = ignore)
                         class_loss = loss_fn_cl(masks_pred, label_mask)
                         valid_mask = (label_mask != 0).unsqueeze(1).repeat(1, model.n_classes, 1, 1)
                         class_loss += dice_loss(
@@ -377,6 +605,39 @@ def train_model(
                         loss = reg_loss_weight * df_loss + class_loss
                         reg_loss = None
 
+                    elif head_mode == "detr":
+                        # (B,N,2)  (B,N,1)  (B,N,1)  (B,N,1)  (B,N,1)  [B,1,H,W]|None
+                        uv_pred, z_pred, conf_pred, weight_pred, occ_pred, depth_pred = model(images)
+
+                        H_img, W_img = images.shape[2], images.shape[3]
+                        reg_loss, class_loss, occ_loss = hungarian_match_loss(
+                            uv_pred, z_pred, conf_pred, weight_pred, occ_pred,
+                            batch['gmm'], H_img, W_img, device,
+                            z_weight=0.1,
+                        )
+                        loss = reg_loss + reg_loss_weight * class_loss + occ_loss
+
+                        # Auxiliary dense depth supervision (only when --aux_depth is set)
+                        aux_depth_loss = torch.tensor(0.0, device=device)
+                        if depth_pred is not None and batch['depth_map'] is not None:
+                            depth_gt = batch['depth_map'].to(device=device, dtype=torch.float32)
+                            # Align spatial size: resize pred to match GT if they differ
+                            if depth_pred.shape[-2:] != depth_gt.shape[-2:]:
+                                depth_pred_aligned = F.interpolate(
+                                    depth_pred, size=depth_gt.shape[-2:], mode="bilinear", align_corners=False
+                                )
+                            else:
+                                depth_pred_aligned = depth_pred
+                            valid_px = depth_gt.squeeze(1) > 0.0   # [B, H, W]
+                            if valid_px.any():
+                                aux_depth_loss = F.huber_loss(
+                                    depth_pred_aligned.squeeze(1)[valid_px],
+                                    depth_gt.squeeze(1)[valid_px],
+                                    delta=1.0,
+                                )
+                            loss = loss + aux_depth_weight * aux_depth_loss
+                        df_loss = None
+
                 optimizer.zero_grad(set_to_none=True)
                 grad_scaler.scale(loss).backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clipping)
@@ -386,13 +647,24 @@ def train_model(
                 pbar.update(images.shape[0])
                 global_step += 1
                 epoch_loss += loss.item()
-                experiment.log({
+                if head_mode == "detr":
+                    experiment.log({
+                        'train loss total':       loss.item(),
+                        'train loss match uv+z':  reg_loss.item(),
+                        'train loss conf':        class_loss.item(),
+                        'train loss occlusion':   occ_loss.item(),
+                        'train loss aux depth':   aux_depth_loss.item(),
+                        'step': global_step,
+                        'epoch': epoch,
+                    })
+                else:
+                    experiment.log({
                         'train loss total': loss.item(),
                         'train loss regression': reg_loss.item() if reg_loss is not None else 0.0,
                         'train loss classification': class_loss.item() if class_loss is not None else 0.0,
                         'train loss df': df_loss.item() if df_loss is not None else 0.0,
                         'step': global_step,
-                        'epoch': epoch
+                        'epoch': epoch,
                     })
                 pbar.set_postfix(**{'loss (batch)': loss.item()})
 
@@ -401,64 +673,53 @@ def train_model(
                 division_step = 10
                 if division_step > 0 and global_step % division_step == 0:
                     histograms = {}
-                    for tag, value in model.named_parameters():
-                        tag = tag.replace('/', '.')
-                        if not (torch.isinf(value) | torch.isnan(value)).any():
-                            histograms['Weights/' + tag] = wandb.Histogram(value.data.cpu())
-                        if not (torch.isinf(value.grad) | torch.isnan(value.grad)).any():
-                            histograms['Gradients/' + tag] = wandb.Histogram(value.grad.data.cpu())
-
-                    val_score_cl, val_score_rg, val_score_df = evaluate(model, val_loader, device, amp, 
+                    val_score_cl, val_score_rg, val_score_df = evaluate(model, val_loader, device, amp,
                                                           use_depth=use_depth, 
                                                           only_depth = only_depth,
                                                           use_mono_depth = use_mono_depth,
                                                           head_mode = head_mode,
                                                           reg_ds_factor=reg_ds_factor)
 
-                    if head_mode == 'both':
-                        scheduler.step(val_score_cl - val_score_rg)
-                        binary_mask = F.sigmoid(binary_pred.squeeze(1)) > 0.5
-                        ds_binary_mask = downsample_torch_mask(binary_mask.float(), reg_ds_factor, "nearest") if reg_ds_factor != 1.0 else binary_mask
-                        wandb_mask_pred = masks_pred.squeeze(1) * (F.sigmoid(ds_binary_mask) > 0.5)
-
-                    elif head_mode == 'segmentation':
-                        scheduler.step(1 - val_score_cl)
-                        binary_mask = F.sigmoid(binary_pred.squeeze(1)) > 0.5
-                        # masks_pred does not exist in this case, put a dummy tensor
-                        masks_pred = torch.zeros_like(true_masks)
-                        wandb_mask_pred = masks_pred.squeeze(1) * (F.sigmoid(binary_pred.squeeze(1))> 0.5)
-
-                    elif head_mode == 'regression':
-                        scheduler.step(1 - val_score_rg)
-                        wandb_mask_pred = masks_pred.squeeze(1)
-                        # binary_mask does not exist in this case, put a dummy tensor
-                        binary_mask = torch.zeros_like(true_masks)
-                        
-                        wandb_df_pred = torch.zeros_like(true_masks)
-                        ds_true_df = torch.zeros_like(true_masks)
-                    elif head_mode == 'df':
-                        scheduler.step(1 - val_score_df)
-                        # wandb_df_pred = df_pred.squeeze(1)
-                        # if use normalized df, need to denomalize and vis
-                        wandb_df_pred = denormalize_df(df_pred,df_neighborhood=10).squeeze(1)
-                        # binary_mask does not exist in this case, put a dummy tensor
-                        wandb_mask_pred = torch.zeros_like(true_masks)
-                        binary_mask = torch.zeros_like(true_masks)
-
-                    elif head_mode == "df_wf":
-                        scheduler.step(1 - val_score_df - reg_loss_weight*val_score_rg)
-                        wandb_df_pred = denormalize_df(df_pred,df_neighborhood=10).squeeze(1)
-                        masks_pred = reverse_log_transform(masks_pred)
-                        wandb_mask_pred = masks_pred.squeeze(1) * (wandb_df_pred < 10)
-                        binary_mask = torch.zeros_like(true_masks)
-
-                    elif head_mode == "df_seg":
+                    if head_mode == "df_seg":
                         scheduler.step(1 - reg_loss_weight * val_score_df + val_score_cl)
                         wandb_df_pred = df_pred.squeeze(1)          # [B, H, W] already [0,1]
                         softmax_pred = F.softmax(masks_pred, dim=1)
                         max_class_pred = torch.argmax(softmax_pred, dim=1, keepdim=True)
                         wandb_mask_pred = max_class_pred.squeeze(1) * (label_mask != 0)
                         binary_mask = torch.zeros_like(interest.squeeze(1))
+
+                    elif head_mode == "detr":
+                        scheduler.step(-(val_score_rg + reg_loss_weight * val_score_cl))
+                        H_img, W_img = images.shape[2], images.shape[3]
+                        overlay = plot_detr_predictions(
+                            images[:, :3], uv_pred, z_pred, conf_pred,
+                            weight_pred, occ_pred,
+                            batch['gmm'], H_img, W_img,
+                        )
+                        vis_3d = plot_detr_3d(
+                            uv_pred, z_pred, conf_pred, batch['gmm'], H_img, W_img
+                        )
+                        log_dict = {
+                            'learning rate':          optimizer.param_groups[0]['lr'],
+                            'val match uv+z (MAE)':   val_score_rg,
+                            'val conf loss':          val_score_cl,
+                            'train loss occlusion':   occ_loss.item(),
+                            'predictions overlay':    wandb.Image(overlay),
+                            '3d gmm vis':             wandb.Image(vis_3d),
+                            'step':                   global_step,
+                            'epoch':                  epoch,
+                            **histograms,
+                        }
+                        if depth_pred is not None and batch['depth_map'] is not None:
+                            depth_gt = batch['depth_map'].to(device=device, dtype=torch.float32)
+                            depth_pred_vis = F.interpolate(depth_pred, size=depth_gt.shape[-2:], mode="bilinear", align_corners=False) if depth_pred.shape[-2:] != depth_gt.shape[-2:] else depth_pred
+                            depth_vis = plot_detr_depth(depth_pred_vis, depth_gt)
+                            log_dict['aux depth GT vs pred'] = wandb.Image(depth_vis)
+                        try:
+                            experiment.log(log_dict)
+                        except Exception as e:
+                            print(f"Failed to log to Weights and Biases: {e}")
+                        continue   # skip generic log_images call below
 
                     logging.info(f'Validation Classification Dice score: {val_score_cl}')
                     logging.info(f'Validation Regression mse : {val_score_rg}')
@@ -502,8 +763,13 @@ def get_args():
     parser.add_argument('--use_depth','-ud', action='store_true', default=False, help='Use depth image')
     parser.add_argument('--only_depth','-od', action='store_true', default=False, help='Only use depth image')
     parser.add_argument('--use_mono_depth','-umd', action='store_true', default=False, help='Use mono depth image')
-    parser.add_argument('--head_mode', type=str, default='segmentation', help='both or segmentation or regression')
+    parser.add_argument('--head_mode', type=str, default='df_seg', help='df_seg, gmm, or detr')
     parser.add_argument('--regression_downsample_factor','-rdf', type=float, default=1.0, help='Downsample factor for regression head')
+    parser.add_argument('--num_queries', '-nq', type=int, default=10, help='Number of DETR slot queries (detr mode only)')
+    parser.add_argument('--aux_depth', action='store_true', default=False,
+                        help='Add auxiliary UNet-decoder depth head in detr mode')
+    parser.add_argument('--aux_depth_weight', type=float, default=0.3,
+                        help='Weight of the auxiliary depth Huber loss (detr mode only)')
     return parser.parse_args()
 
 
@@ -523,20 +789,26 @@ if __name__ == '__main__':
         print("Using RGB-D images")
         model = TwoHeadUnet(classes=args.classes,
                             in_channels=4,
-                            head_config = head_mode,
-                            regression_downsample_factor=args.regression_downsample_factor)
+                            head_config=head_mode,
+                            regression_downsample_factor=args.regression_downsample_factor,
+                            num_queries=args.num_queries,
+                            detr_aux_depth=args.aux_depth)
 
     if args.use_depth and args.only_depth:
         model = TwoHeadUnet(classes=args.classes,
                             in_channels=1,
-                            head_config = head_mode,
-                            regression_downsample_factor=args.regression_downsample_factor)
+                            head_config=head_mode,
+                            regression_downsample_factor=args.regression_downsample_factor,
+                            num_queries=args.num_queries,
+                            detr_aux_depth=args.aux_depth)
 
     if not args.use_depth:
         model = TwoHeadUnet(classes=args.classes,
                             in_channels=3,
-                            head_config = head_mode,
-                            regression_downsample_factor=args.regression_downsample_factor)
+                            head_config=head_mode,
+                            regression_downsample_factor=args.regression_downsample_factor,
+                            num_queries=args.num_queries,
+                            detr_aux_depth=args.aux_depth)
         
     model = model.to(memory_format=torch.channels_last)
 
@@ -566,9 +838,10 @@ if __name__ == '__main__':
             only_depth=args.only_depth,
             use_mono_depth = args.use_mono_depth,
             reg_loss_weight=args.reg_loss_weight,
-            head_mode = head_mode,
+            head_mode=head_mode,
             weight_decay=1e-7,
-            reg_ds_factor=args.regression_downsample_factor
+            reg_ds_factor=args.regression_downsample_factor,
+            aux_depth_weight=args.aux_depth_weight,
         )
     except torch.cuda.OutOfMemoryError:
         logging.error('Detected OutOfMemoryError! '
@@ -589,7 +862,8 @@ if __name__ == '__main__':
             only_depth=args.only_depth,
             use_mono_depth = args.use_mono_depth,
             reg_loss_weight=args.reg_loss_weight,
-            head_mode = head_mode,
+            head_mode=head_mode,
             weight_decay=1e-7,
-            reg_ds_factor=args.regression_downsample_factor
+            reg_ds_factor=args.regression_downsample_factor,
+            aux_depth_weight=args.aux_depth_weight,
         )

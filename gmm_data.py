@@ -4,35 +4,27 @@ gmm_data.py
 Dataset for samples produced by FrontierNet/inspect_gmm_samples.py.
 
 Directory layout expected:
-    gmm_dir/   {stem}_gmm.npz          — Gaussian mixture parameters
-    data_dir/  {stem}_frontier.npy     — frontier activation map [H, W], float32 [0,1]
-               {stem}_depth48.npy      — metric depth at frame 48 [H, W], float32
+    gmm_dir/   {stem}_gmm.npz   — Gaussian mixture parameters
+    depth_dir/ {stem}.png       — metric depth at frame 48 [H, W], uint16 mm
 
 Optionally:
-    image_dir/ {stem}.{ext}            — RGB image at frame 0
+    image_dir/ {stem}.{ext}     — RGB image
 
-The frontier map is used directly as the continuous interest (supervision) signal,
-mirroring the role of the IDP map in InterestDataset.
-
-__getitem__ returns a dict compatible with the df_seg training branch in train.py:
+__getitem__ returns:
     {
-        "image":      [3, H, W] float32  — RGB or frontier replicated to 3ch
-        "interest":   [1, H, W] float32  — frontier activation in [0, 1]
-        "valid":      [1, H, W] bool
-        "label_mask": [H, W]    int64
-        "depth":      [1, H, W] float32  — depth48 (present when data_dir given)
-        "gmm":        dict               — raw GMM arrays from the .npz file
+        "image":     [3, H, W] float32
+        "depth_map": [1, H, W] float32  metres  (None when depth_dir not set)
+        "gmm":       dict  — raw GMM arrays + "occlusion" (K,) bool when depth_dir set
     }
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 from PIL import Image
 from torch.utils.data import Dataset
 
@@ -69,33 +61,23 @@ def _find_image(stem: str, image_dir: Path) -> Optional[Path]:
 # ---------------------------------------------------------------------------
 
 class GmmDataset(Dataset):
-    """Loads FrontierNet GMM samples for UNet training.
+    """Loads FrontierNet GMM samples for DETR training.
 
     Parameters
     ----------
     gmm_dir:
-        Directory containing ``{stem}_gmm.npz`` files produced by
-        ``inspect_gmm_samples.py``.
-    data_dir:
-        Directory containing ``{stem}_frontier.npy`` and
-        ``{stem}_depth48.npy`` files.  If *None*, frontier/depth loading
-        is skipped and an all-zero image placeholder is returned.
+        Directory containing ``{stem}_gmm.npz`` files.
     image_dir:
         Optional directory with RGB images named ``{stem}.{ext}``.
-        When provided and a matching file is found, the RGB image is
-        returned as ``"image"``; otherwise the frontier map is repeated
-        across 3 channels.
+    depth_dir:
+        Optional directory with ``{stem}.png`` depth images (uint16, mm).
+        When provided, per-centre occlusion labels and the dense depth map
+        tensor are computed and returned.
+    depth_scale:
+        Divisor applied to raw depth PNG values to convert to metres.
+        Default 1000 (mm → m).
     image_size:
-        Target (H, W) for all spatial tensors.  Defaults to (544, 720),
-        which matches the camera constants in inspect_gmm_samples.py.
-    min_interest:
-        Lower threshold for the valid mask (pixels below this are ignored).
-    num_classes:
-        Number of discretisation classes for ``label_mask`` (including the
-        background / invalid class 0).
-    seg_bin_edges:
-        Monotone thresholds that split ``[0, 1]`` into ``num_classes - 1``
-        foreground buckets.  Length must equal ``num_classes - 1``.
+        Target (H, W).  Defaults to (544, 720).
     augment:
         Apply random horizontal flip.
     """
@@ -103,43 +85,23 @@ class GmmDataset(Dataset):
     def __init__(
         self,
         gmm_dir: str,
-        data_dir: Optional[str] = None,
         image_dir: Optional[str] = None,
+        depth_dir: Optional[str] = None,
+        depth_scale: float = 1000.0,
         image_size: Tuple[int, int] = (544, 720),
-        min_interest: float = 1e-3,
-        num_classes: int = 7,
-        seg_bin_edges: Tuple[float, ...] = (0.05, 0.15, 0.3, 0.45, 0.6, 0.8),
         augment: bool = False,
     ) -> None:
         self.gmm_dir = Path(gmm_dir)
-        self.data_dir = Path(data_dir) if data_dir else None
         self.image_dir = Path(image_dir) if image_dir else None
+        self.depth_dir = Path(depth_dir) if depth_dir else None
+        self.depth_scale = depth_scale
         self.image_size = image_size
-        self.min_interest = min_interest
-        self.num_classes = num_classes
-        self.seg_bin_edges = seg_bin_edges
         self.augment = augment
 
-        gmm_files = _find_gmm_files(self.gmm_dir)
-        if not gmm_files:
+        self.samples = _find_gmm_files(self.gmm_dir)
+        if not self.samples:
             raise RuntimeError(f"No *_gmm.npz files found in {self.gmm_dir}")
 
-        # Build list of (stem, gmm_path) keeping only samples whose frontier
-        # map exists in data_dir (when data_dir is provided).
-        self.samples: List[Tuple[str, Path]] = []
-        for gmm_path in gmm_files:
-            stem = _stem_from_gmm(gmm_path)
-            if self.data_dir is not None:
-                frontier_path = self.data_dir / f"{stem}_frontier.npy"
-                if not frontier_path.exists():
-                    continue  # skip samples missing frontier data
-            self.samples.append((stem, gmm_path))
-
-        if not self.samples:
-            raise RuntimeError(
-                f"No usable samples found. gmm_dir={self.gmm_dir}, "
-                f"data_dir={self.data_dir}"
-            )
 
     # ------------------------------------------------------------------
     # Protocol
@@ -149,48 +111,52 @@ class GmmDataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx: int) -> Dict[str, object]:
-        stem, gmm_path = self.samples[idx]
+        gmm_path = self.samples[idx]
+        stem = _stem_from_gmm(gmm_path)
+
+        # ---- Load scene depth (frame 48) — done first so occlusion
+        #      check uses original frame-48 z before the correction below
+        depth_map_np: Optional[np.ndarray] = self._load_depth(stem)
 
         # ---- GMM parameters -------------------------------------------
         gmm = self._load_gmm(gmm_path)
 
-        # ---- Frontier / interest map ----------------------------------
-        if self.data_dir is not None:
-            frontier = self._load_frontier(stem)   # [1, H, W] float32
-            depth = self._load_depth(stem)          # [1, H, W] float32 or None
-        else:
-            H, W = self.image_size
-            frontier = torch.zeros(1, H, W, dtype=torch.float32)
-            depth = None
+        
 
-        interest = frontier  # alias: frontier IS the interest signal
+        # ---- Frame-48 → frame-0 z correction --------------------------
+        # GMMs are fitted in frame-48 camera space; approximate transform
+        # to frame 0 by adding ~1 m (camera moves forward ~1 m in 48 frames).
+        if "z" in gmm:
+            gmm["z"] = gmm["z"].astype(np.float64) + 1.0
+        if "centres_3d" in gmm:
+            gmm["centres_3d"] = gmm["centres_3d"].astype(np.float64)
+            gmm["centres_3d"][:, 2] += 1.0
+        
+        # ---- Per-centre occlusion labels (after z adjustment) ---------
+        if depth_map_np is not None:
+            gmm["occlusion"] = self._compute_occlusion(depth_map_np, gmm)
 
         # ---- RGB image ------------------------------------------------
-        image = self._load_image(stem, frontier)   # [3, H, W] float32
+        image = self._load_image(stem)   # [3, H, W] float32
 
-        # ---- Valid mask & label mask ----------------------------------
-        valid = (interest > self.min_interest)                # [1, H, W] bool
-        label_mask = self._generate_label_mask(interest, valid)  # [H, W] int64
+        # ---- Convert scene depth to tensor [1, H, W] ------------------
+        depth_map: Optional[torch.Tensor] = None
+        if depth_map_np is not None:
+            depth_map = torch.from_numpy(depth_map_np).unsqueeze(0)  # [1, H, W]
 
         # ---- Optional augmentation ------------------------------------
         if self.augment and torch.rand(1).item() < 0.5:
             image = torch.flip(image, dims=[2])
-            interest = torch.flip(interest, dims=[2])
-            valid = torch.flip(valid, dims=[2])
-            label_mask = torch.flip(label_mask, dims=[1])
-            if depth is not None:
-                depth = torch.flip(depth, dims=[2])
+            if depth_map is not None:
+                depth_map = torch.flip(depth_map, dims=[2])
 
-        sample: Dict[str, object] = {
-            "image": image,
-            "interest": interest,
-            "valid": valid,
-            "label_mask": label_mask,
-            "gmm": gmm,
+        return {
+            "image":     image,
+            "depth_map": depth_map,
+            "gmm":       gmm,
         }
-        if depth is not None:
-            sample["depth"] = depth
-        return sample
+
+
 
     # ------------------------------------------------------------------
     # Loading helpers
@@ -201,35 +167,78 @@ class GmmDataset(Dataset):
         with np.load(path) as data:
             return {k: data[k].copy() for k in data.files}
 
-    def _load_frontier(self, stem: str) -> torch.Tensor:
-        """Load frontier activation map → [1, H, W] float32, values in [0, 1]."""
-        path = self.data_dir / f"{stem}_frontier.npy"
-        arr = np.load(path).astype(np.float32)
-        if arr.ndim == 3:
-            arr = arr.squeeze(0)          # (H, W)
-        t = torch.from_numpy(arr).unsqueeze(0)  # [1, H, W]
-        if t.shape[1:] != tuple(self.image_size):
-            t = F.interpolate(
-                t.unsqueeze(0), size=self.image_size, mode="bilinear", align_corners=False
-            ).squeeze(0)
-        return t
+    def _load_depth(self, stem: str) -> Optional[np.ndarray]:
+        """Load the depth image for *stem* and return it in metres as float32.
 
-    def _load_depth(self, stem: str) -> Optional[torch.Tensor]:
-        """Load depth48 map → [1, H, W] float32, or None if file missing."""
-        path = self.data_dir / f"{stem}_depth48.npy"
-        if not path.exists():
+        Looks for ``{depth_dir}/{stem}.png``.  Returns ``None`` if not found.
+        Raw values are divided by ``self.depth_scale`` to convert to metres
+        (default 1000 for mm-encoded depth PNGs).
+        """
+        if self.depth_dir is None:
             return None
-        arr = np.load(path).astype(np.float32)
-        if arr.ndim == 3:
-            arr = arr.squeeze(0)
-        t = torch.from_numpy(arr).unsqueeze(0)  # [1, H, W]
-        if t.shape[1:] != tuple(self.image_size):
-            t = F.interpolate(
-                t.unsqueeze(0), size=self.image_size, mode="bilinear", align_corners=False
-            ).squeeze(0)
-        return t
+        depth_path = self.depth_dir / f"{stem}.png"
+        if not depth_path.exists():
+            return None
+        depth_raw = np.array(Image.open(depth_path), dtype=np.float32)
+        return depth_raw / self.depth_scale  # metres
 
-    def _load_image(self, stem: str, frontier: torch.Tensor) -> torch.Tensor:
+    def _compute_occlusion(self, depth_m: np.ndarray, gmm: Dict[str, np.ndarray]) -> np.ndarray:
+        """Return a boolean (K,) array indicating occluded GMM centres.
+
+        A centre is marked occluded when its camera-space z depth exceeds the
+        observed scene depth at the corresponding image pixel.
+
+        Parameters
+        ----------
+        depth_m:
+            Scene depth array in metres, shape (H, W).
+        gmm:
+            GMM parameter dict containing ``centres_2d`` (K, 2) and either
+            ``z`` (K,) or ``centres_3d`` (K, 3).
+
+        Returns
+        -------
+        occlusion : (K,) bool ndarray
+            ``True`` for each centre whose z is greater than the scene depth
+            at its projected pixel.  Centres whose pixel falls outside the
+            depth image or whose depth pixel is zero (invalid) are marked
+            non-occluded (``False``).
+        """
+        centres_2d = gmm.get("centres_2d")  # (K, 2)
+        if centres_2d is None:
+            return np.zeros(0, dtype=bool)
+
+        K = len(centres_2d)
+
+        # Prefer the dedicated per-centre z array; fall back to centres_3d[:, 2]
+        if "z" in gmm:
+            z_vals = gmm["z"].astype(np.float64)        # (K,)
+        elif "centres_3d" in gmm:
+            z_vals = gmm["centres_3d"][:, 2].astype(np.float64)
+        else:
+            return np.zeros(K, dtype=bool)
+
+        depth_H, depth_W = depth_m.shape
+        occlusion = np.zeros(K, dtype=bool)
+
+        for k in range(K):
+            u, v = centres_2d[k]
+            col = int(round(u))
+            row = int(round(v))
+
+            # Skip out-of-bounds pixels
+            if not (0 <= row < depth_H and 0 <= col < depth_W):
+                continue
+
+            scene_depth = float(depth_m[row, col])
+            if scene_depth <= 0.0:  # invalid depth pixel — treat as non-occluded
+                continue
+
+            occlusion[k] = z_vals[k] > scene_depth
+
+        return occlusion
+
+    def _load_image(self, stem: str) -> torch.Tensor:
         """Return [3, H, W] float32.  Uses an RGB file when available, otherwise
         replicates the single-channel frontier map across 3 channels."""
         if self.image_dir is not None:
@@ -242,22 +251,8 @@ class GmmDataset(Dataset):
                 return torch.from_numpy(
                     np.asarray(img, dtype=np.float32) / 255.0
                 ).permute(2, 0, 1)
-        # Fallback: tile frontier to 3 channels
-        return frontier.expand(3, -1, -1).clone()
-
-    # ------------------------------------------------------------------
-    # Label mask
-    # ------------------------------------------------------------------
-
-    def _generate_label_mask(
-        self, interest: torch.Tensor, valid: torch.Tensor
-    ) -> torch.Tensor:
-        """Discretise interest into integer classes; 0 = invalid background."""
-        base = interest[0]  # [H, W]
-        edges = torch.tensor(self.seg_bin_edges, dtype=base.dtype, device=base.device)
-        labels = torch.bucketize(base, edges) + 1          # 1 … num_classes-1
-        labels = torch.where(valid[0], labels, torch.zeros_like(labels))
-        return labels.clamp(max=self.num_classes - 1).long()
+        # Fallback: return a black image
+        return torch.zeros(3, *self.image_size, dtype=torch.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -266,16 +261,25 @@ class GmmDataset(Dataset):
 
 def collate_gmm(batch: List[Dict]) -> Dict:
     """Stack spatial tensors; keep GMM dicts as a list (variable K per sample)."""
-    output = {
-        "image":      torch.stack([x["image"] for x in batch]),
-        "interest":   torch.stack([x["interest"] for x in batch]),
-        "valid":      torch.stack([x["valid"] for x in batch]),
-        "label_mask": torch.stack([x["label_mask"] for x in batch]),
-        "gmm":        [x["gmm"] for x in batch],   # list of dicts, K varies
+    out: Dict = {
+        "image": torch.stack([x["image"] for x in batch]),
+        "gmm":   [x["gmm"] for x in batch],   # list of dicts, K varies
     }
-    if all("depth" in x for x in batch):
-        output["depth"] = torch.stack([x["depth"] for x in batch])
-    return output
+
+    # depth_map is Optional[Tensor] — only stack when all samples have it
+    depth_maps = [x.get("depth_map") for x in batch]
+    if all(d is not None for d in depth_maps):
+        stacked = []
+        for d in depth_maps:
+            if isinstance(d, torch.Tensor):
+                stacked.append(d if d.dim() == 3 else d.unsqueeze(0))
+            else:
+                stacked.append(torch.from_numpy(np.asarray(d, dtype=np.float32)).unsqueeze(0))
+        out["depth_map"] = torch.stack(stacked)
+    else:
+        out["depth_map"] = None
+
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -285,27 +289,25 @@ def collate_gmm(batch: List[Dict]) -> Dict:
 def main() -> None:
     import argparse
     import matplotlib.pyplot as plt
-    import matplotlib.patches as mpatches
-    from matplotlib.colors import Normalize
 
     parser = argparse.ArgumentParser(description="Inspect GmmDataset samples")
-    parser.add_argument(
-        "--gmm_dir", default="/cluster/project/cvg/students/shangwu/FrontierNet/gmm_output",
-    )
-    parser.add_argument(
-        "--data_dir", default="/cluster/project/cvg/students/shangwu/FrontierNet/data",
-    )
-    parser.add_argument("--image_dir", default=None)
+    parser.add_argument("--gmm_dir",    default="gmm_dummy/gmm")
+    parser.add_argument("--image_dir",  default="gmm_dummy/image")
+    parser.add_argument("--depth_dir",  default="gmm_dummy/depth",
+                        help="Directory with {stem}.png depth images for occlusion check")
+    parser.add_argument("--depth_scale", type=float, default=1000.0,
+                        help="Divisor to convert raw depth PNG values to metres (default: 1000)")
     parser.add_argument("--idx", type=int, default=None,
                         help="Sample index to show (default: show all)")
-    parser.add_argument("--out_dir", default=None,
+    parser.add_argument("--out_dir", default="gmm_dummy/tmp",
                         help="Save figures here instead of displaying them")
     args = parser.parse_args()
 
     ds = GmmDataset(
         gmm_dir=args.gmm_dir,
-        data_dir=args.data_dir,
         image_dir=args.image_dir,
+        depth_dir=args.depth_dir,
+        depth_scale=args.depth_scale,
     )
     print(f"Dataset: {len(ds)} samples")
 
@@ -316,87 +318,115 @@ def main() -> None:
         out_dir.mkdir(parents=True, exist_ok=True)
 
     for i in indices:
-        stem, gmm_path = ds.samples[i]
+        gmm_path = ds.samples[i]
+        stem = _stem_from_gmm(gmm_path)
         sample = ds[i]
 
-        image      = sample["image"].numpy()          # [3, H, W]
-        interest   = sample["interest"][0].numpy()    # [H, W]
-        valid      = sample["valid"][0].numpy()       # [H, W] bool
-        label_mask = sample["label_mask"].numpy()     # [H, W] int64
-        gmm        = sample["gmm"]
-        depth      = sample["depth"][0].numpy() if "depth" in sample else None
+        image     = sample["image"].numpy()   # [3, H, W]
+        depth_map = sample["depth_map"]       # [1, H, W] tensor or None
+        gmm       = sample["gmm"]
 
-        K = len(gmm["weights"])
-        centres_2d = gmm["centres_2d"]   # (K, 2)  u, v  [pixels]
-        centres_3d = gmm["centres_3d"]   # (K, 3)  x, y, z [m]
-        weights    = gmm["weights"]      # (K,)
-        covs       = gmm["covariances"]  # (K, 3, 3)
+        centres_2d = gmm.get("centres_2d")
+        centres_3d = gmm.get("centres_3d")
+        weights    = gmm.get("weights")
+        occlusion  = gmm.get("occlusion")    # (K,) bool or None
+        K = len(centres_2d) if centres_2d is not None else 0
 
         # ---- text summary --------------------------------------------
         print(f"\n{'─'*60}")
         print(f"[{i}]  stem : {stem}")
         print(f"      image : {image.shape}  range [{image.min():.3f}, {image.max():.3f}]")
-        print(f"   interest : {interest.shape}  range [{interest.min():.4f}, {interest.max():.4f}]"
-              f"  valid_frac={valid.mean():.3f}")
-        print(f" label_mask : unique classes = {sorted(set(label_mask.flatten().tolist()))}")
-        if depth is not None:
-            valid_depth = depth[depth > 0]
-            print(f"      depth : {depth.shape}  range [{valid_depth.min():.2f}, {valid_depth.max():.2f}] m")
-        print(f"        GMM : K={K} active components")
-        for k in range(K):
-            u, v = centres_2d[k]
-            x, y, z = centres_3d[k]
-            w = weights[k]
-            print(f"          #{k}  (u,v)=({u:.1f},{v:.1f})  z={z:.2f}m  w={w:.4f}")
-            print(f"              cov diag = [{covs[k,0,0]:+.5f}  {covs[k,1,1]:+.5f}  {covs[k,2,2]:+.5f}]")
+        if depth_map is not None:
+            dm = depth_map[0].numpy()
+            valid = dm > 0
+            print(f"  depth_map : range [{dm[valid].min() if valid.any() else 0:.2f},"
+                  f" {dm[valid].max() if valid.any() else 0:.2f}] m  ({valid.mean():.1%} valid)")
+        if K > 0:
+            n_occ = int(occlusion.sum()) if occlusion is not None else "n/a"
+            print(f"  occlusion : {n_occ}/{K} centres occluded")
+            scene_d = ds._load_depth(stem)
+            for k in range(K):
+                u, v = centres_2d[k]
+                w    = weights[k] if weights is not None else 1.0
+                z    = centres_3d[k, 2] if centres_3d is not None else float("nan")
+                occ_str = ""
+                if occlusion is not None:
+                    if scene_d is not None:
+                        col, row = int(round(u)), int(round(v))
+                        dH, dW = scene_d.shape
+                        sd = scene_d[row, col] if (0 <= row < dH and 0 <= col < dW) else float("nan")
+                        occ_str = f"  scene_depth={sd:.3f}m  {'OCCLUDED' if occlusion[k] else 'visible'}"
+                    else:
+                        occ_str = f"  {'OCCLUDED' if occlusion[k] else 'visible'}"
+                print(f"          #{k}  (u,v)=({u:.1f},{v:.1f})  z={z:.3f}m  w={w:.4f}{occ_str}")
 
         # ---- figure --------------------------------------------------
-        ncols = 4 if depth is None else 5
-        fig, axes = plt.subplots(1, ncols, figsize=(4 * ncols, 4))
+        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
         fig.suptitle(stem, fontsize=9)
+        axes = axes.ravel()
 
-        # Panel 0 – image
+        # Panel 0 – RGB image with GMM centre markers
         ax = axes[0]
         ax.imshow(image.transpose(1, 2, 0).clip(0, 1))
-        ax.set_title("image (frontier ×3)" if args.image_dir is None else "RGB image")
-        ax.axis("off")
-
-        # Panel 1 – frontier / interest
-        ax = axes[1]
-        im = ax.imshow(interest, cmap="viridis", vmin=0, vmax=1)
-        fig.colorbar(im, ax=ax, fraction=0.03)
-        ax.set_title(f"interest (frontier)\nmax={interest.max():.3f}")
-        ax.axis("off")
-
-        # Panel 2 – label mask
-        ax = axes[2]
-        n_cls = ds.num_classes
-        im = ax.imshow(label_mask, cmap="hot", vmin=0, vmax=n_cls - 1)
-        fig.colorbar(im, ax=ax, fraction=0.03)
-        ax.set_title(f"label_mask (0–{n_cls-1})")
-        ax.axis("off")
-
-        # Panel 3 – interest with GMM centres overlaid
-        ax = axes[3]
-        ax.imshow(interest, cmap="viridis", vmin=0, vmax=1)
-        colors = plt.cm.Set1(np.linspace(0, 1, max(K, 1)))
-        for k in range(K):
-            u, v = centres_2d[k]
-            ax.scatter(u, v, s=120, c=[colors[k]], marker="x", linewidths=2,
-                       label=f"#{k} w={weights[k]:.3f} z={centres_3d[k,2]:.1f}m")
-        if K > 0:
+        if K > 0 and centres_2d is not None:
+            colors = plt.cm.Set1(np.linspace(0, 1, max(K, 1)))
+            for k in range(K):
+                u, v   = centres_2d[k]
+                w      = weights[k] if weights is not None else 1.0
+                z      = centres_3d[k, 2] if centres_3d is not None else float("nan")
+                is_occ = bool(occlusion[k]) if occlusion is not None else False
+                marker = "X" if is_occ else "o"
+                edge_c = "red" if is_occ else "white"
+                ax.scatter(u, v, s=120, c=[colors[k]], marker=marker,
+                           linewidths=2, edgecolors=edge_c,
+                           label=f"#{k} w={w:.2f} z={z:.1f}m{'  OCC' if is_occ else ''}")
             ax.legend(fontsize=6, loc="upper right")
-        ax.set_title("GMM centres on frontier")
+        occ_note = f"  ({int(occlusion.sum())}/{K} occ)" if occlusion is not None and K > 0 else ""
+        ax.set_title(f"RGB image{occ_note}")
         ax.axis("off")
 
-        # Panel 4 (optional) – depth
-        if depth is not None:
-            ax = axes[4]
-            disp = np.where(depth > 0, depth, np.nan)
-            im = ax.imshow(disp, cmap="plasma")
-            fig.colorbar(im, ax=ax, fraction=0.03)
-            ax.set_title("depth48 [m]")
-            ax.axis("off")
+        # Panel 1 – scene depth with GMM centres annotated by occlusion
+        ax = axes[1]
+        scene_depth = ds._load_depth(stem)
+        if scene_depth is not None:
+            im = ax.imshow(scene_depth, cmap="plasma")
+            fig.colorbar(im, ax=ax, fraction=0.03, label="m")
+            if K > 0 and centres_2d is not None:
+                for k in range(K):
+                    u, v   = centres_2d[k]
+                    z      = centres_3d[k, 2] if centres_3d is not None else float("nan")
+                    is_occ = bool(occlusion[k]) if occlusion is not None else False
+                    color  = "red" if is_occ else "lime"
+                    marker = "X" if is_occ else "o"
+                    ax.scatter(u, v, s=120, c=color, marker=marker,
+                               edgecolors="white", linewidths=0.8, zorder=5)
+                    ax.text(u + 4, v - 4, f"#{k}\nz={z:.2f}m",
+                            fontsize=5, color="white",
+                            bbox=dict(boxstyle="round,pad=0.1", fc="black", alpha=0.5))
+            vis_patch = plt.Line2D([0], [0], marker="o", color="w",
+                                   markerfacecolor="lime", markersize=7, label="visible")
+            occ_patch = plt.Line2D([0], [0], marker="X", color="w",
+                                   markerfacecolor="red",  markersize=7, label="occluded")
+            ax.legend(handles=[vis_patch, occ_patch], fontsize=6, loc="upper right")
+            ax.set_title("scene depth [m]  (lime=visible, red=occluded)")
+        else:
+            ax.text(0.5, 0.5, "no depth available", ha="center", va="center",
+                    transform=ax.transAxes)
+            ax.set_title("scene depth")
+        ax.axis("off")
+
+        # Panel 2 – depth map tensor (from dataset __getitem__)
+        ax = axes[2]
+        if depth_map is not None:
+            dm = depth_map[0].numpy()
+            im = ax.imshow(np.where(dm > 0, dm, np.nan), cmap="plasma")
+            fig.colorbar(im, ax=ax, fraction=0.03, label="m")
+            ax.set_title("depth_map tensor [m]")
+        else:
+            ax.text(0.5, 0.5, "no depth_map", ha="center", va="center",
+                    transform=ax.transAxes)
+            ax.set_title("depth_map tensor")
+        ax.axis("off")
 
         plt.tight_layout()
 

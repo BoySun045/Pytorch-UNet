@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
+from scipy.optimize import linear_sum_assignment
 
 from utils.regression_loss import weighted_mse_loss, masked_f1_loss, reverse_log_transform, log_transform
 from utils.dice_score import dice_coeff, multiclass_dice_coeff
@@ -75,6 +76,74 @@ def evaluate(net, dataloader, device, amp, use_depth=False,
                 mask_pred_oh = F.one_hot(masks_pred.argmax(dim=1), net.n_classes).permute(0, 3, 1, 2).float()
                 valid_mask = (label_mask != 0).unsqueeze(1).repeat(1, net.n_classes, 1, 1)
                 dice_score += multiclass_dice_coeff(mask_pred_oh, mask_true_oh, valid_mask, reduce_batch_first=True)
+
+            elif head_mode == "gmm":
+                heatmap_pred, depth_pred = net(image)   # [B,1,H,W], [B,1,H,W]
+
+                # Heatmap MAE (logged as df_loss for W&B compatibility)
+                df_loss += F.l1_loss(heatmap_pred.squeeze(1), interest.squeeze(1))
+
+                # Masked depth MAE (logged as reg_loss)
+                depth_map = batch['depth_map'].to(device=device, dtype=torch.float32)
+                depth_mask_flat = valid.squeeze(1).bool()   # [B, H, W]
+                if depth_mask_flat.sum() > 0:
+                    reg_loss += F.l1_loss(
+                        depth_pred.squeeze(1)[depth_mask_flat],
+                        depth_map.squeeze(1)[depth_mask_flat],
+                    )
+
+            elif head_mode == "detr":
+                uv_pred, z_pred, conf_pred = net(image)   # (B,N,2), (B,N,1), (B,N,1)
+                B, N = uv_pred.shape[:2]
+                H_img, W_img = image.shape[2], image.shape[3]
+
+                batch_conf_loss = torch.tensor(0.0, device=device)
+                batch_match_loss = torch.tensor(0.0, device=device)
+
+                for b in range(B):
+                    gmm_b      = batch['gmm'][b]
+                    centres_2d = gmm_b.get("centres_2d", None)
+                    centres_3d = gmm_b.get("centres_3d", None)
+
+                    conf_targets = torch.zeros(N, device=device)
+
+                    if centres_2d is None or len(centres_2d) == 0:
+                        batch_conf_loss = batch_conf_loss + F.binary_cross_entropy(
+                            conf_pred[b].squeeze(-1), conf_targets
+                        )
+                        continue
+
+                    K = len(centres_2d)
+                    gt_uv = torch.tensor(centres_2d, device=device, dtype=torch.float32)
+                    gt_uv[:, 0] = gt_uv[:, 0] / W_img
+                    gt_uv[:, 1] = gt_uv[:, 1] / H_img
+                    gt_z = torch.zeros(K, device=device, dtype=torch.float32)
+                    if centres_3d is not None:
+                        gt_z = torch.tensor(centres_3d[:, 2], device=device, dtype=torch.float32)
+
+                    uv_b = uv_pred[b]
+                    z_b  = z_pred[b].squeeze(-1)
+
+                    cost_uv = torch.cdist(uv_b, gt_uv, p=1)
+                    cost_z  = torch.abs(z_b.unsqueeze(1) - gt_z.unsqueeze(0))
+                    cost    = (cost_uv + 0.1 * cost_z).cpu().numpy()
+
+                    row_ind, col_ind = linear_sum_assignment(cost)
+
+                    if len(row_ind) > 0:
+                        batch_match_loss = batch_match_loss + (
+                            F.l1_loss(uv_b[row_ind], gt_uv[col_ind])
+                            + 0.1 * F.l1_loss(z_b[row_ind], gt_z[col_ind])
+                        )
+
+                    conf_targets[row_ind] = 1.0
+                    batch_conf_loss = batch_conf_loss + F.binary_cross_entropy(
+                        conf_pred[b].squeeze(-1), conf_targets
+                    )
+
+                # store: conf → dice_score slot, match uv+z → reg_loss slot
+                dice_score += batch_conf_loss / B
+                reg_loss   += batch_match_loss / B
 
     net.train()
     avg_dice_score = dice_score / num_val_batches if dice_score != 0 else 0

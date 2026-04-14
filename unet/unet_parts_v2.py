@@ -9,6 +9,97 @@ from segmentation_models_pytorch.base.modules import Activation
 from segmentation_models_pytorch.base import initialization as init
 
 
+class DetrHead(nn.Module):
+    """DETR-style sparse set prediction head.
+
+    Predicts N slot vectors via cross-attention of learned queries to
+    multi-scale memory tokens built from UNet encoder features (bottleneck
+    + x3, pooled to the same spatial size).
+
+    Returns per slot:
+        uv   : sigmoid → (B, N, 2)  normalised pixel coords in [0, 1]
+        z    : softplus → (B, N, 1) metric depth in metres
+        conf : sigmoid → (B, N, 1) slot-active probability
+    """
+
+    def __init__(
+        self,
+        bottleneck_channels: int,
+        x3_channels: int,
+        num_queries: int = 10,
+        d_model: int = 256,
+        nhead: int = 8,
+        num_decoder_layers: int = 3,
+    ):
+        super().__init__()
+        self.num_queries = num_queries
+        self.d_model = d_model
+
+        # Project encoder feature maps to a common d_model dimension
+        self.proj_bottleneck = nn.Linear(bottleneck_channels, d_model)
+        self.proj_x3 = nn.Linear(x3_channels, d_model)
+
+        # Learnable object queries (à la DETR)
+        self.query_embed = nn.Embedding(num_queries, d_model)
+
+        # Transformer decoder: queries cross-attend to memory tokens
+        decoder_layer = nn.TransformerDecoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            batch_first=True,
+            dim_feedforward=d_model * 4,
+            dropout=0.1,
+        )
+        self.transformer_decoder = nn.TransformerDecoder(
+            decoder_layer, num_layers=num_decoder_layers
+        )
+
+        # Per-slot prediction heads
+        self.head_uv     = nn.Linear(d_model, 2)   # sigmoid  → [0, 1] normalised
+        self.head_z      = nn.Linear(d_model, 1)   # softplus → depth [m]
+        self.head_conf   = nn.Linear(d_model, 1)   # sigmoid  → slot confidence
+        self.head_weight = nn.Linear(d_model, 1)   # softplus → GMM component weight
+        self.head_occ    = nn.Linear(d_model, 1)   # sigmoid  → occlusion probability
+
+    # ------------------------------------------------------------------
+    def _build_memory(self, features):
+        """Flatten + project bottleneck and x3 encoder maps into memory tokens.
+
+        Pools x3 (H/8) to match bottleneck (H/32) spatial size so token
+        counts are equal; final memory has 2·S tokens.
+        """
+        bottleneck = features[-1]   # (B, C_bn, H/32, W/32)
+        x3         = features[-3]   # (B, C_x3, H/8,  W/8 )
+
+        # Pool x3 to bottleneck spatial size
+        x3_pooled = F.adaptive_avg_pool2d(x3, bottleneck.shape[2:])   # (B, C_x3, H/32, W/32)
+
+        # Flatten spatial → (B, S, C)
+        bn_flat = bottleneck.flatten(2).transpose(1, 2)   # (B, S, C_bn)
+        x3_flat = x3_pooled.flatten(2).transpose(1, 2)    # (B, S, C_x3)
+
+        # Project to d_model
+        memory = torch.cat(
+            [self.proj_bottleneck(bn_flat), self.proj_x3(x3_flat)], dim=1
+        )   # (B, 2S, d_model)
+        return memory
+
+    def forward(self, features):
+        memory = self._build_memory(features)                           # (B, S, d_model)
+        B = memory.shape[0]
+
+        queries = self.query_embed.weight.unsqueeze(0).expand(B, -1, -1)  # (B, N, d_model)
+        slots   = self.transformer_decoder(queries, memory)               # (B, N, d_model)
+
+        uv     = torch.sigmoid(self.head_uv(slots))      # (B, N, 2)
+        z      = F.softplus(self.head_z(slots))          # (B, N, 1)
+        conf   = torch.sigmoid(self.head_conf(slots))    # (B, N, 1)
+        weight = F.softplus(self.head_weight(slots))     # (B, N, 1)  unnormalised weight
+        occ    = torch.sigmoid(self.head_occ(slots))     # (B, N, 1)  occlusion prob
+
+        return uv, z, conf, weight, occ
+
+
 class ScaledTanh(nn.Module):
     def __init__(self):
         super(ScaledTanh, self).__init__()
@@ -37,10 +128,13 @@ class PredictionModel(torch.nn.Module):
         elif head_config == "df_wf":
             init.initialize_head(self.df_regression_head)
             init.initialize_head(self.wf_regression_head)
-
         elif head_config == "df_seg":
             init.initialize_head(self.segmentation_head)
             init.initialize_head(self.df_regression_head)
+        elif head_config == "detr":
+            # DetrHead uses standard PyTorch init; init aux depth head if present
+            if getattr(self, "detr_aux_depth", False):
+                init.initialize_head(self.aux_depth_head)
 
         self.head_mode = head_config
         self.df_neighborhood = df_neighborhood
@@ -68,6 +162,20 @@ class PredictionModel(torch.nn.Module):
             x = nn.functional.pad(x, (0, new_w - w, 0, new_h - h))
 
         features = self.encoder(x)
+
+        # DETR sparse prediction from encoder features
+        if self.head_mode == "detr":
+            uv, z, conf, weight, occ = self.detr_head(features)
+            # Auxiliary dense depth head: run the UNet decoder when enabled
+            if self.detr_aux_depth:
+                decoder_output = self.decoder(*features)
+                depth_pred = self.aux_depth_head(decoder_output)  # [B, 1, H, W]
+                # Remove padding added at input
+                depth_pred = depth_pred[:, :, :h, :w]
+            else:
+                depth_pred = None
+            return uv, z, conf, weight, occ, depth_pred
+
         decoder_output = self.decoder(*features)
 
         if self.head_mode == "both":
@@ -115,9 +223,9 @@ class PredictionModel(torch.nn.Module):
             if h % self.output_stride != 0 or w % self.output_stride != 0:
                 masks = masks[:, :, :h, :w]
                 df = df[:, :, :int(h * self.df_regression_head.downsample_factor), :int(w * self.df_regression_head.downsample_factor)]
-            
+
             return df, masks
-            
+
     @torch.no_grad()
     def predict(self, x):
         """Inference method. Switch model to `eval` mode, call `.forward(x)` with `torch.no_grad()`

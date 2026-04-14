@@ -7,7 +7,8 @@ from .unet_parts_v2 import (
     RegressionHead,
     PredictionModel,
     SegmentationHead,
-    DfRegressionHead
+    DfRegressionHead,
+    DetrHead,
 )
 import torch.nn as nn
 import torch 
@@ -70,7 +71,13 @@ class TwoHeadUnet(PredictionModel):
         activation: Optional[Union[str, callable]] = None,
         head_config: str = "both",  # "both", "segmentation", "regression"
         regression_downsample_factor: float = 1.0,
-        df_neighborhood: int = 10, 
+        df_neighborhood: int = 10,
+        # DETR-specific parameters (only used when head_config == "detr")
+        num_queries: int = 10,
+        detr_d_model: int = 256,
+        detr_nhead: int = 8,
+        detr_num_decoder_layers: int = 3,
+        detr_aux_depth: bool = False,
     ):
         super().__init__()
 
@@ -181,6 +188,28 @@ class TwoHeadUnet(PredictionModel):
                 kernel_size=3,
             )
 
+        if head_config == "detr":
+            enc_channels = self.encoder.out_channels   # e.g. (3, 64, 64, 128, 256, 512)
+            self.detr_head = DetrHead(
+                bottleneck_channels=enc_channels[-1],
+                x3_channels=enc_channels[-3],
+                num_queries=num_queries,
+                d_model=detr_d_model,
+                nhead=detr_nhead,
+                num_decoder_layers=detr_num_decoder_layers,
+            )
+            # Optional auxiliary dense depth head (UNet decoder → depth map)
+            self.detr_aux_depth = detr_aux_depth
+            if detr_aux_depth:
+                self.aux_depth_head = DfRegressionHead(
+                    in_channels=decoder_channels[-1],
+                    out_channels=1,
+                    downsample_factor=1.0,
+                    activation=None,   # DfRegressionHead applies softplus internally
+                    kernel_size=3,
+                )
+        else:
+            self.detr_aux_depth = False
 
         self.name = "u-{}".format(encoder_name)
         self.initialize(head_config, df_neighborhood)
